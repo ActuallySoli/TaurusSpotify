@@ -50,6 +50,9 @@ static inline BOOL SGLockArtworkHasMotion(SGLockArtwork artwork) {
 }
 // How the lyrics are drawn, stored as the index of SGLyricsClipStyle (Still unless changed).
 #define SGKeyLockScreenLyricsStyle @"spotifyglass.lockscreen.lyricsStyle"
+// Where the words sit against the artwork, stored as the index of SGLyricsClipComposition
+// (Full screen unless changed): Poster, Vinyl and Messages keep the cover itself in sight.
+#define SGKeyLockScreenLyricsLook @"spotifyglass.lockscreen.lyricsLook"
 // Off until switched on: download in Low Data Mode too.
 #define SGKeyMotionLowData @"spotifyglass.motion.lowdata"
 
@@ -65,6 +68,13 @@ void SGMotionAlbumCover(NSString *artist, NSString *album, SGMotionShape shape, 
 
 // The artist's logo from Apple Music, a transparent PNG `pixels` wide, or nil. Main queue.
 void SGMotionArtistLogo(NSString *artist, CGFloat pixels, void (^done)(UIImage *logo));
+
+// The album's editorial notes from Apple Music as plain text, or nil. Main queue.
+void SGMotionAlbumNotes(NSString *artist, NSString *album, void (^done)(NSString *notes));
+
+// The artist's editorial photo and/or animated header video from Apple Music. Main queue.
+void SGMotionArtistArtwork(NSString *artist, BOOL wantPhoto, BOOL wantMotion, CGFloat pixels,
+                           void (^done)(UIImage *photo, NSURL *motionFile));
 
 // The width a full-screen clip is downloaded at: three quarters of the screen's pixels. A tall cover at the
 // screen's full width ran to 29 MB a song; at this width it was 7 MB and looks the same in motion.

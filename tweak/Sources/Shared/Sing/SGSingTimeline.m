@@ -61,7 +61,7 @@ void SGSingTimelineBegin(SGSingTimeline *t, SGAudioStamp origin, float level) {
     t->recoveryStart = UINT64_MAX;
     t->state = SGSingTimelinePreparing;
     t->level = SGSingClampLevel(level);
-    SGSingMixerInit(&t->mixer, SGSingSampleRate, 1);
+    SGSingMixerInit(&t->mixer, SGSingSampleRate, 0.5f);
 }
 void SGSingTimelineSetLevel(SGSingTimeline *t, float level) {
     t->level = SGSingClampLevel(level);
@@ -79,7 +79,7 @@ void SGSingTimelineSetSpatial(SGSingTimeline *t, bool on, float distance, float 
 }
 void SGSingTimelineBypass(SGSingTimeline *t) {
     if (t->state == SGSingTimelineIdle || t->state == SGSingTimelineDraining) return;
-    if (t->state == SGSingTimelinePreparing) SGSingMixerInit(&t->mixer, SGSingSampleRate, 1);
+    if (t->state == SGSingTimelinePreparing) SGSingMixerInit(&t->mixer, SGSingSampleRate, 0.5f);
     else if (t->state == SGSingTimelineActive) SGSingMixerBypass(&t->mixer);
     t->state = t->captured == t->consumed ? SGSingTimelineIdle : SGSingTimelineDraining;
 }
@@ -190,8 +190,8 @@ uint32_t SGSingTimelineRead(SGSingTimeline *t, float *out, uint32_t frames) {
                 t->roomLeft[i] = 0;
                 // A short last vocal packet can exhaust coverage inside a large render quantum.
                 // Keep the mixer's next recovery ramp anchored to the dry gain actually emitted.
-                if (t->mixer.gain != 1 || t->mixer.remaining) {
-                    t->mixer.gain = t->mixer.targetGain = 1;
+                if (t->mixer.gain != 0.5f || t->mixer.remaining) {
+                    t->mixer.gain = t->mixer.targetGain = 0.5f;
                     t->mixer.step = 0;
                     t->mixer.remaining = 0;
                 }

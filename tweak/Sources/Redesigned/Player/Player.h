@@ -13,10 +13,35 @@ typedef NS_ENUM(NSInteger, SGRPlayerBackgroundKind) {
     SGRPlayerBackgroundAnimated,
     SGRPlayerBackgroundVisualiser,
     SGRPlayerBackgroundFill,
+    SGRPlayerBackgroundShader,
+    SGRPlayerBackgroundBlack,
+    SGRPlayerBackgroundPicture,
 };
 SGRPlayerBackgroundKind SGRPlayerBackground(void);
 SGRPlayerBackgroundKind SGRPlayerAnimatedFallback(void);
 NSArray<NSString *> *SGRPlayerBackgroundNames(void);
+
+#define SGRKeyPlayerBlackBackground @"spotifyglass.redesign.player.blackBackground"
+#define SGRKeyPlayerPicturePhoto @"spotifyglass.redesign.player.picturePhoto"
+UIImage *SGRPlayerPictureImage(void);
+void SGRPlayerPickPicture(UIViewController *from, void (^picked)(void));
+
+#define SGRKeyPlayerLyricLine @"spotifyglass.redesign.player.lyricLine"
+#define SGRKeyPlayerMusicTop @"spotifyglass.redesign.player.musicTop"
+#define SGRKeyPlayerMusicIcons @"spotifyglass.redesign.player.musicIcons"
+#define SGRKeyPlayerHideShuffle @"spotifyglass.redesign.player.hideShuffle"
+#define SGRKeyPlayerHideRepeat @"spotifyglass.redesign.player.hideRepeat"
+#define SGRKeyPlayerHideVideoSwitch @"spotifyglass.redesign.player.hideVideoSwitch"
+#define SGRKeyPlayerHeaderGlass @"spotifyglass.redesign.player.headerGlass"
+#define SGRKeyLyricsKeepTitle @"spotifyglass.redesign.lyricsKeepTitle"
+#define SGRKeyGlassSheets @"spotifyglass.redesign.glassSheets"
+#define SGRKeyPlayerFullScreen @"spotifyglass.redesign.player.fullScreen"
+#define SGRKeyPlayerLyricsBeside @"spotifyglass.redesign.player.lyricsBeside"
+#define SGKeyVisualizerLyrics @"spotifyglass.visualizer.lyrics"
+
+BOOL SGRPlayerMusicTopOn(void);
+BOOL SGRPlayerMusicIconsOn(void);
+void SGRPlayerTriggerMoreMenu(void);
 
 #define SGRKeyPlayerBackdropOpacity @"spotifyglass.redesign.player.backdropOpacity"
 #define SGRKeyPlayerFillOpacity @"spotifyglass.redesign.player.fillOpacity"
@@ -98,6 +123,19 @@ CGFloat SGRPlayerClipDim(CGFloat luminance, BOOL contrast, BOOL lyrics);
 BOOL SGRPlayerVisualiserShowing(void);
 void SGRPlayerVisualiserUpdate(void);
 UIView *SGRPlayerVisualiserPreview(void);
+
+// The mixing pill (PlayerMixing.x): a glass capsule under the header that shows Spotify's or the mod's
+// fade while it is carrying the song into the next one. Feed it the player's header unit at the layout
+// passes; it creates itself there and drives the rest on its own.
+void SGRPlayerMixPillRelayout(UIViewController *unit);
+
+// The Shader background (Shaders/SGRShaders.h): an animated Metal field behind the player, in the cover's
+// colors, moving with the song's bass and spectrum and leaning with the phone's tilt.
+NSArray<NSString *> *SGRShaderNames(void);   // Nebula, Mosaic, Kaleido, Orbit, Smoke
+NSInteger SGRShaderIndex(void);
+BOOL SGRPlayerShaderShowing(void);
+void SGRPlayerShaderUpdate(void);
+UIView *SGRPlayerShaderPreview(void);
 void SGRPlayerMenuSetBackground(SGRPlayerBackgroundKind kind);
 
 void SGRPlayerVanish(UIView *view);

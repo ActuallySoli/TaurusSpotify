@@ -3,6 +3,8 @@
 #import <stdatomic.h>
 #import "Core/SGCore.h"
 #import "Shared/Audio/SGAudioPipeline.h"
+#import "Shared/AudioEffects/AudioEffects.h"
+#import "Shared/Player/PlayerState.h"
 #import "Headers/SPTPlayer.h"
 #import "SpeedPitch.h"
 #import "SGTimePitch.h"
@@ -358,7 +360,84 @@ void SGSetPlayerPitchFollowsSpeed(BOOL follows) {
     // The pitch slider goes while pitch follows, so what it had set goes with it.
     if (follows) sg_semitones = 0;
     apply();
+    SGPlayerSaveSongSpeedPitchIfKept();
 }
+
+static NSString *currentSongURI(void) {
+    return SGURIString(SGPlayerState().track.URI);
+}
+
+static NSDictionary<NSString *, NSDictionary *> *savedSongsDict(void) {
+    NSDictionary *dict = [NSUserDefaults.standardUserDefaults dictionaryForKey:SGKeySpeedPitchSongs];
+    return [dict isKindOfClass:NSDictionary.class] ? dict : @{};
+}
+
+BOOL SGPlayerKeepForCurrentSong(void) {
+    NSString *uri = currentSongURI();
+    return uri.length && [savedSongsDict()[uri] isKindOfClass:NSDictionary.class];
+}
+
+void SGPlayerSaveSongSpeedPitchIfKept(void) {
+    NSString *uri = currentSongURI();
+    if (!uri.length || !SGPlayerKeepForCurrentSong()) return;
+    NSMutableDictionary *all = [savedSongsDict() mutableCopy];
+    all[uri] = @{
+        @"speed": @(sg_speed),
+        @"pitch": @(sg_semitones),
+        @"follows": @(sg_follows),
+        @"reverb": @(SGDSPNumber(SGKeyDSPReverbAmount)),
+    };
+    [NSUserDefaults.standardUserDefaults setObject:all forKey:SGKeySpeedPitchSongs];
+}
+
+void SGSetPlayerKeepForCurrentSong(BOOL keep) {
+    NSString *uri = currentSongURI();
+    if (!uri.length) return;
+    NSMutableDictionary *all = [savedSongsDict() mutableCopy];
+    if (keep) {
+        all[uri] = @{
+            @"speed": @(sg_speed),
+            @"pitch": @(sg_semitones),
+            @"follows": @(sg_follows),
+            @"reverb": @(SGDSPNumber(SGKeyDSPReverbAmount)),
+        };
+    } else {
+        [all removeObjectForKey:uri];
+    }
+    [NSUserDefaults.standardUserDefaults setObject:all forKey:SGKeySpeedPitchSongs];
+}
+
+@interface SGSpeedPitchSongWatcher : NSObject <SGPlayerStateObserver>
+@end
+
+@implementation SGSpeedPitchSongWatcher {
+    NSString *_lastURI;
+    BOOL _lastWasKept;
+}
+- (void)playerStateDidChange:(SPTPlayerState *)state {
+    NSString *uri = SGURIString(state.track.URI);
+    if (!uri.length || [uri isEqualToString:_lastURI]) return;
+    _lastURI = [uri copy];
+    NSDictionary *entry = savedSongsDict()[uri];
+    if ([entry isKindOfClass:NSDictionary.class]) {
+        _lastWasKept = YES;
+        BOOL fol = [entry[@"follows"] boolValue];
+        SGSetPlayerPitchFollowsSpeed(fol);
+        SGSetPlayerSpeed(entry[@"speed"] ? [entry[@"speed"] doubleValue] : 1.0);
+        if (!fol) SGSetPlayerPitch([entry[@"pitch"] floatValue]);
+        if (entry[@"reverb"]) SGDSPSetReverbAmount([entry[@"reverb"] doubleValue]);
+        [NSNotificationCenter.defaultCenter postNotificationName:SGSpeedPitchChangedNotification object:nil];
+    } else if (_lastWasKept) {
+        _lastWasKept = NO;
+        SGSetPlayerSpeed(1.0);
+        SGSetPlayerPitch(0.0f);
+        SGDSPSetReverbAmount(0.0);
+        [NSNotificationCenter.defaultCenter postNotificationName:SGSpeedPitchChangedNotification object:nil];
+    }
+}
+@end
+
+static SGSpeedPitchSongWatcher *sg_songWatcher;
 
 #pragma mark - Spotify's clock
 
@@ -378,5 +457,9 @@ void SGSetPlayerPitchFollowsSpeed(BOOL follows) {
     SGAudioPipelineRegister(SGAudioStageSpeedPitch, &processor);
     SGAudioPipelineSetPullProcessor(processPull);
     %init;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        sg_songWatcher = [SGSpeedPitchSongWatcher new];
+        SGAddPlayerStateObserver(sg_songWatcher);
+    });
     SGRequireClasses(@[@"SPTPlayerState"]);
 }

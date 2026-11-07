@@ -2,6 +2,7 @@
 #import "Settings/SGModPage.h"
 #import "AdBlock.h"
 #import "Shared/Privacy/Privacy.h"
+#import "Shared/Jam/Jam.h"
 
 NSString *const SGFakePremiumWarning = @"This is the part of EeveeSpotify Spotify's takedown went after, and it has not been tested here. It can end in a forced logout or worse for the account. A Premium account gains nothing from it.";
 
@@ -64,6 +65,7 @@ UIViewController *SGAdsSettingsPage(void) {
         SGNotedSection(@"Premium", @[
             SGWithSymbol(fakePremium, @"crown"),
         ], @"Enabled by default. For free accounts only; Spoof Premium is unstable and may force a logout."),
+        SGJamSettingsSection(),
         SGPrivacySection(),
         SGNotedSection(@"Ads blocked so far", counts,
                        @"\"3 of 214\" is 3 stopped of 214 checked. 0 of 0 means Spotify never asked, so that part does nothing on this version."),

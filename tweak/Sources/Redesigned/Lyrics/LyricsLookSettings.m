@@ -9,6 +9,7 @@
 #import "LyricsLook.h"
 #import "Shared/Fonts/Fonts.h"
 #import "SGRKaraokeView.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 static const CGFloat kPreviewHeight = 230, kCardRadius = 26;
 static const CGFloat kPillHeight = 48;
@@ -18,8 +19,10 @@ static const CGFloat kChipHeight = 36, kChipGap = 8, kStripGap = 12, kStripPad =
 
 // A page of the five sliders, each storing as it moves. A preset picked on the page while the sheet is up
 // is read back into them; their own changes are not, so a slider is never reloaded under the finger.
-@interface SGRLyricsStyleSheet : SGModPage
+@interface SGRLyricsStyleSheet : SGModPage <UIDocumentPickerDelegate>
 @property (nonatomic, readonly) CGFloat fittedHeight;   // the table's content once laid out, 0 before
+- (void)importEffectProfile;
+- (void)shareEffectProfile;
 @end
 
 @implementation SGRLyricsStyleSheet {
@@ -59,6 +62,63 @@ static const CGFloat kChipHeight = 36, kChipGap = 8, kStripGap = 12, kStripPad =
 
 - (void)close {
     [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)profileMessage:(NSString *)title message:(NSString *)message {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)importEffectProfile {
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeJSON] asCopy:YES];
+    picker.delegate = self;
+    SGPresentDark(picker);
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    NSURL *url = urls.firstObject;
+    if (!url) return;
+    BOOL scoped = [url startAccessingSecurityScopedResource];
+    __weak SGRLyricsStyleSheet *weakPage = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSError *readError = nil;
+        NSFileHandle *file = [NSFileHandle fileHandleForReadingFromURL:url error:&readError];
+        NSData *data = [file readDataUpToLength:16 * 1024 + 1 error:&readError];
+        [file closeAndReturnError:nil];
+        if (scoped) [url stopAccessingSecurityScopedResource];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            SGRLyricsStyleSheet *page = weakPage;
+            if (!page) return;
+            NSError *error = readError;
+            if (!error && SGRImportLyricsShaderProfile(data, nil, &error)) {
+                [page profileMessage:@"Effect profile imported" message:@"The lyrics preview now uses this profile. Font, animation and timing settings stay as you set them."];
+            } else [page profileMessage:@"Profile not imported" message:error.localizedDescription ?: @"Choose a valid lyrics-effect JSON profile. Your current style was kept."];
+        });
+    });
+}
+
+- (void)shareEffectProfile {
+    NSError *error = nil;
+    NSData *data = SGRLyricsShaderProfileData(&error);
+    NSURL *folder = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES] URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
+    NSString *name = [SGRLyricsShaderNames()[(NSUInteger)SGRLyricsShaderIndex()] stringByAppendingString:@".lyrics-effect.json"];
+    NSURL *file = [folder URLByAppendingPathComponent:name];
+    if (!data || ![NSFileManager.defaultManager createDirectoryAtURL:folder withIntermediateDirectories:YES attributes:nil error:&error]
+        || ![data writeToURL:file options:NSDataWritingAtomic error:&error]) {
+        [NSFileManager.defaultManager removeItemAtURL:folder error:nil];
+        [self profileMessage:@"Profile not shared" message:error.localizedDescription ?: @"The profile could not be saved. Try again."];
+        return;
+    }
+    UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:@[file] applicationActivities:nil];
+    share.completionWithItemsHandler = ^(UIActivityType type, BOOL completed, NSArray *items, NSError *failure) {
+        [NSFileManager.defaultManager removeItemAtURL:folder error:nil];
+    };
+    share.popoverPresentationController.sourceView = self.view;
+    share.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
+    SGPresentDark(share);
+    [self presentViewController:share animated:YES completion:nil];
 }
 
 @end
@@ -110,14 +170,30 @@ static void presentStyleSheet(UIViewController *owner) {
     SGModRow *animation = SGMenuRow(@"Animation", motions, ^NSString *{ return motions[(NSUInteger)SGRLyricsAnimationIndex()]; }, ^(NSInteger index) {
         SGRSetLyricsAnimationIndex(index, sheetPage);
     });
-    rows = [rows arrayByAddingObjectsFromArray:@[font, import, animation]];
+    NSArray<NSString *> *shaders = SGRLyricsShaderNames();
+    SGModRow *shader = SGMenuRow(@"Word effect", shaders, ^NSString *{ return shaders[(NSUInteger)SGRLyricsShaderIndex()]; }, ^(NSInteger index) {
+        SGRSetLyricsShaderIndex(index, sheetPage);
+    });
+    SGModRow *intensity = SGSliderRow(@"Effect intensity", nil, 0, 1, 0.05, ^double { return SGRLyricsShaderOptionsNow().intensity; }, ^(double value) {
+        SGRLyricsShaderOptions options = SGRLyricsShaderOptionsNow();
+        options.intensity = value;
+        SGRSetLyricsShaderOptions(options, sheetPage);
+    }, ^NSString *(double value) { return share(value); });
+    SGModRow *speed = SGSliderRow(@"Effect speed", nil, 0.35, 2, 0.05, ^double { return SGRLyricsShaderOptionsNow().speed; }, ^(double value) {
+        SGRLyricsShaderOptions options = SGRLyricsShaderOptionsNow();
+        options.speed = value;
+        SGRSetLyricsShaderOptions(options, sheetPage);
+    }, ^NSString *(double value) { return [NSString stringWithFormat:@"%.2g×", value]; });
+    rows = [rows arrayByAddingObjectsFromArray:@[font, import, animation, shader, intensity, speed]];
+    SGModRow *shareProfile = SGActionRow(@"Share effect profile", @"The lyrics effect, intensity and speed as a JSON file", ^{ [(SGRLyricsStyleSheet *)sheetPage shareEffectProfile]; });
+    SGModRow *importProfile = SGActionRow(@"Import effect profile", @"A lyrics-effect JSON file from Files", ^{ [(SGRLyricsStyleSheet *)sheetPage importEffectProfile]; });
     SGModRow *reset = SGActionRow(@"Reset to default", @"Apple Music's look, the system font and its animation", ^{
         SGRResetLyricsLook(nil);   // the sheet and the page both read the look again
     });
     NSString *footer = @"Blur is how much the lines away from the one sung soften. Glow and Wave are how strongly a held "
-                       @"word glows and its letters rise. 100% is Apple Music's. Font and Animation are for the lyrics only. Wave, Glow, Bounce and Ripple move each letter as it is sung (Glow and Wave above set how much); Float lifts the whole word.";
+                       @"word glows and its letters rise. 100% is Apple Music's. Font and Animation are for the lyrics only. Wave, Glow, Bounce and Ripple move each letter as it is sung (Glow and Wave above set how much); Float lifts the whole word. Word effect adds moving light inside sung words: Neon color ribbons, Inferno ember bands, Hologram prism scanlines, Chrome a metallic sheen, and Blueprint a drafting scan. Classic keeps the original text. Effects stop while paused or out of view; Reduce Motion keeps their static colors. Intensity and speed affect these layers only.";
     SGRLyricsStyleSheet *page = [[SGRLyricsStyleSheet alloc] initWithTitle:@"Lyrics Style" intro:nil
-                                                                 sections:@[SGNotedSection(nil, rows, footer),
+                                                                 sections:@[SGNotedSection(nil, rows, footer), SGSection(@"Effect profiles", @[shareProfile, importProfile]),
                                                                            SGSection(nil, @[reset])] footer:nil];
     sheetPage = page;
     page.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose

@@ -10,6 +10,14 @@ static char kCoverKey, kMetaKey, kPlayKey, kLayoutKey, kToolbarKey, kScrimKey, k
 static char kIndependentActionsKey;
 static char kShuffleKey, kAddKey, kDownloadKey, kInfoKey, kBlockHeightKey, kBlockWatchedKey;
 static char kHeroKey, kHeroHeightKey, kRestPlaneKey, kRowKey, kRowWatchedKey, kMoreKey, kCreatorKey, kPinnedMoreKey, kSortKey;
+static char kPlateKey;
+
+BOOL SGRPlaylistFullCoverOn(void) {
+    static BOOL on;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ on = SGEnabled(SGRKeyPlaylistFullCover); });
+    return on;
+}
 
 #pragma mark - finding things
 
@@ -167,6 +175,26 @@ static void applyHero(UIView *layout, UIView *cover, UIView *plane, UIView *bloc
 
     [hero followCover:coverImageIn(cover)];
     conceal(cover);
+}
+
+static void applyCard(UIView *cover) {
+    if (!cover) return;
+    UIImageView *picture = coverImageIn(cover);
+    UIView *clipped = picture ?: cover;
+    clipped.layer.cornerRadius = SGRRadiusArtwork;
+    clipped.layer.cornerCurve = kCACornerCurveContinuous;
+    clipped.clipsToBounds = YES;
+    SGRShadowPlateIn(cover, &kPlateKey).frame = clipped.frame;
+    if (!picture) return;
+    if (picture.image && picture.bounds.size.width >= kMinCover) {
+        SGRPlaylistSetArtwork(cover, picture.image);
+        SGRRevealMark(SGRPlaylistPageOf(cover), SGRRevealPicture);
+    }
+    SGRObserveImage(picture, ^(UIImageView *view) {
+        if (!view.image || view.bounds.size.width < kMinCover) return;
+        SGRPlaylistSetArtwork(view, view.image);
+        SGRRevealMark(SGRPlaylistPageOf(view), SGRRevealPicture);
+    });
 }
 
 #pragma mark - the block, the redesign's own
@@ -428,7 +456,10 @@ static void applyHeader(UIView *layout) {
         objc_setAssociatedObject(block, &kBlockHeightKey, @(rest), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     CGFloat reach = rest - SGRHeaderInfoBottom - [info contentHeightForWidth:info.bounds.size.width] + SGRHeaderInfoTitleRise;
-    if (cover) applyHero(layout, cover, plane, block, reach, stretch);
+    if (cover) {
+        if (SGRPlaylistFullCoverOn()) applyHero(layout, cover, plane, block, reach, stretch);
+        else applyCard(cover);
+    }
 }
 
 static UIView *layoutIn(UIView *root) {

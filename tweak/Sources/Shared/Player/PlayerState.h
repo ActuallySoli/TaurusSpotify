@@ -12,3 +12,4 @@ NSString *SGURIString(id uri);
 void SGAddPlayerStateObserver(id<SGPlayerStateObserver> observer);
 // The last state reported, nil before the player has reported one.
 SPTPlayerState *SGPlayerState(void);
+id<SPTPlayer> SGPlaybackPlayer(void);

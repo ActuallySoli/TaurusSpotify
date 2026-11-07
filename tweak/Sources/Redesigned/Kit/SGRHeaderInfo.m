@@ -32,6 +32,12 @@ static BOOL setText(UILabel *label, NSString *text) {
     return YES;
 }
 
+@implementation UIViewController (SGRNoteSheet)
+- (void)sgr_closeNoteSheet {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+@end
+
 @implementation SGRHeaderInfo {
     UILabel *_title, *_creator, *_length, *_about;
     UIImageView *_logo;
@@ -56,6 +62,9 @@ static BOOL setText(UILabel *label, NSString *text) {
                         SGRTertiary(), 1, NSTextAlignmentCenter);
     _about = infoLabel(self, SGRFont(UIFontTextStyleFootnote, UIFontWeightRegular, UIContentSizeCategoryExtraLarge),
                        SGRSecondary(), 2, NSTextAlignmentNatural);
+    _about.userInteractionEnabled = YES;
+    _about.accessibilityHint = @"Opens the whole note";
+    [_about addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(sgr_aboutTapped)]];
 
     _shuffle = [[SGRMirrorButton alloc] initWithFrame:CGRectZero];
     _shuffle.fallbackGlyph = [UIImage systemImageNamed:@"shuffle"];
@@ -80,8 +89,42 @@ static BOOL setText(UILabel *label, NSString *text) {
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hit = [super hitTest:point withEvent:event];
+    if (hit == _about) return _about;
+    if (!_about.hidden && _about.text.length && CGRectContainsPoint(CGRectInset(_about.frame, -8, -6), point)) return _about;
     if (hit == self || hit == _creator) return [self sgr_creatorHit:point];
     return hit;
+}
+
+- (void)sgr_aboutTapped {
+    if (!_about.text.length) return;
+    UIViewController *presenter = nil;
+    for (UIResponder *r = self.nextResponder; r; r = r.nextResponder) {
+        if ([r isKindOfClass:UIViewController.class]) { presenter = (UIViewController *)r; break; }
+    }
+    while (presenter.presentedViewController) presenter = presenter.presentedViewController;
+    if (!presenter) return;
+    UIViewController *sheet = [UIViewController new];
+    sheet.title = _title.text ?: @"About";
+    sheet.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    sheet.view.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1];
+    UITextView *textView = [[UITextView alloc] initWithFrame:sheet.view.bounds];
+    textView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    textView.backgroundColor = UIColor.clearColor;
+    textView.editable = NO;
+    textView.textColor = SGRPrimary();
+    textView.font = SGRFont(UIFontTextStyleBody, UIFontWeightRegular, UIContentSizeCategoryExtraLarge);
+    textView.textContainerInset = UIEdgeInsetsMake(16, 16, 32, 16);
+    textView.text = _about.text;
+    [sheet.view addSubview:textView];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:sheet];
+    nav.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    sheet.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                                                                                            target:sheet
+                                                                                            action:@selector(sgr_closeNoteSheet)];
+    UISheetPresentationController *spc = nav.sheetPresentationController;
+    spc.detents = @[UISheetPresentationControllerDetent.mediumDetent, UISheetPresentationControllerDetent.largeDetent];
+    spc.prefersGrabberVisible = YES;
+    [presenter presentViewController:nav animated:YES completion:nil];
 }
 
 - (BOOL)showTitle:(NSString *)title creator:(NSString *)creator length:(NSString *)length about:(NSString *)about {

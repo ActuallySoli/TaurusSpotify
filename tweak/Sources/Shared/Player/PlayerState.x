@@ -10,6 +10,7 @@ NSString *SGURIString(id uri) {
 
 static NSHashTable<id<SGPlayerStateObserver>> *sg_stateObservers;
 static SPTPlayerState *sg_playerState;
+static __weak id<SPTPlayer> sg_playbackPlayer;
 static NSString *sg_stateKey;
 // Set once the now playing platform has reported; the mod's own observer on the player stands down.
 static BOOL sg_platformReported = NO;
@@ -24,16 +25,36 @@ SPTPlayerState *SGPlayerState(void) {
     return sg_playerState;
 }
 
+id<SPTPlayer> SGPlaybackPlayer(void) {
+    return sg_playbackPlayer;
+}
+
 // What an observer is told about; the state object itself is new with every position report.
+static NSString *transitionKey(SPTPlayerTrack *track) {
+    NSDictionary *metadata = [track.metadata isKindOfClass:NSDictionary.class] ? track.metadata : nil;
+    NSString *provider = [track respondsToSelector:@selector(provider)] && [track.provider isKindOfClass:NSString.class] ? track.provider : @"";
+    NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithObject:provider];
+    for (NSString *key in @[@"automix.mode", @"automix.transition_uri", @"automix.auto_preset_id",
+                            @"audio.fade_out_start_time", @"audio.fade_out_duration",
+                            @"audio.fade_in_start_time", @"audio.fade_in_duration", @"audio.fade_overlap"]) {
+        id value = metadata[key];
+        [parts addObject:[value isKindOfClass:NSString.class] ? value
+            : [value isKindOfClass:NSNumber.class] ? [value stringValue] : @""];
+    }
+    return [parts componentsJoinedByString:@"|"];
+}
+
 static NSString *keyOf(SPTPlayerState *state) {
     SPTPlayerOptions *options = [state respondsToSelector:@selector(options)] ? state.options : nil;
     BOOL shuffling = [options respondsToSelector:@selector(shufflingContext)] && options.shufflingContext;
     NSDictionary *metadata = [state.track.metadata isKindOfClass:NSDictionary.class] ? state.track.metadata : nil;
     NSString *canvas = [metadata[@"canvas.url"] isKindOfClass:NSString.class] ? metadata[@"canvas.url"] : @"";
     NSString *kind = [metadata[@"canvas.type"] isKindOfClass:NSString.class] ? metadata[@"canvas.type"] : @"";
-    return [NSString stringWithFormat:@"%@|%@|%d%d%d%d|%@|%@", SGURIString(state.track.URI), SGURIString(state.contextURI),
+    NSArray *future = [state respondsToSelector:@selector(future)] && [state.future isKindOfClass:NSArray.class] ? state.future : nil;
+    SPTPlayerTrack *next = [future.firstObject isKindOfClass:NSClassFromString(@"SPTPlayerTrack")] ? future.firstObject : nil;
+    return [NSString stringWithFormat:@"%@|%@|%d%d%d%d|%@|%@|%@|%@|%@", SGURIString(state.track.URI), SGURIString(state.contextURI),
             state.isPaused, state.isPlaying, [state respondsToSelector:@selector(isLoading)] && state.isLoading, shuffling,
-            canvas, kind];
+            canvas, kind, transitionKey(state.track), SGURIString(next.URI), transitionKey(next)];
 }
 
 static void publish(SPTPlayerState *state) {
@@ -44,11 +65,12 @@ static void publish(SPTPlayerState *state) {
     for (id<SGPlayerStateObserver> observer in sg_stateObservers.allObjects) [observer playerStateDidChange:state];
 }
 
-static void report(id state, BOOL platform) {
+static void report(id player, id state, BOOL platform) {
     if (![state isKindOfClass:objc_getClass("SPTPlayerState")]) return;
     dispatch_block_t apply = ^{
         if (platform) sg_platformReported = YES;
         else if (sg_platformReported) return;
+        sg_playbackPlayer = player;
         publish(state);
     };
     if (NSThread.isMainThread) apply();
@@ -60,7 +82,7 @@ static void report(id state, BOOL platform) {
 
 @implementation SGPlayerObserver
 - (void)player:(id)player stateDidChange:(id)state {
-    report(state, NO);
+    report(player, state, NO);
 }
 @end
 
@@ -73,7 +95,7 @@ static SGPlayerObserver *sg_ownObserver;
     dispatch_once(&once, ^{
         SGLog(@"player state: from %@, a %@, on the main thread %d", [player class], [state class], NSThread.isMainThread);
     });
-    report(state, YES);
+    report(player, state, YES);
 }
 %end
 
@@ -87,7 +109,7 @@ static SGPlayerObserver *sg_ownObserver;
             sg_ownObserver = [SGPlayerObserver new];
             [(id<SPTPlayer>)player addPlayerObserver:sg_ownObserver];
             id state = [player respondsToSelector:@selector(state)] ? [(id<SPTPlayer>)player state] : nil;
-            if (state) report(state, NO);
+            if (state) report(player, state, NO);
         });
     });
 }

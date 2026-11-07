@@ -33,6 +33,8 @@
 #import "Shared/LyricsSources/LyricsSources.h"
 #import "Shared/Player/SGLastTrack.h"
 #import "Player.h"
+#import "Shaders/SGRShaders.h"
+#import "Shaders/SGRShaderLibrary.h"
 
 // The card's height as a share of its width, kept between the two bounds.
 static const CGFloat kCardAspect = 0.5, kCardMinHeight = 168, kCardMaxHeight = 220;
@@ -45,9 +47,12 @@ static NSArray<NSString *> *backgroundNotes(void) {
         @"The cover, blurred and held still.",
         @"The cover's colors, drifting slowly.",
         @"The cover itself, blurred and slowly turning. It rests while a song is paused.",
-        @"The song's Canvas or the album's moving cover, else Fluid. The player's ⋯ menu switches between all six backgrounds.",
+        @"The song's Canvas or the album's moving cover, else Fluid. The player's ⋯ menu switches between all the backgrounds.",
         @"The song's sound as gentle hills in the cover's colors, over Fluid held still. They settle while a song is paused.",
         @"The cover fades into progressively stronger blur over a dark tint sampled from its lower edge.",
+        @"A Metal field in the cover's colors: Nebula, Mosaic, Kaleido, Orbit or Smoke, moving with the song's bass and leaning with the tilt.",
+        @"Pure black behind the cover and controls.",
+        @"A photo of your own from Photos.",
     ];
 }
 
@@ -59,7 +64,7 @@ static NSArray<NSString *> *backgroundNotes(void) {
 
 @implementation SGRPlayerShowcase {
     SGRArtworkField *_field;
-    UIView *_motion, *_visualiser;
+    UIView *_motion, *_visualiser, *_shader;
     UIImageView *_cover;
     SGMarqueeLabel *_title, *_artist;
     UIView *_progress, *_progressFill;
@@ -156,7 +161,7 @@ static NSArray<NSString *> *backgroundNotes(void) {
     _artist.text = shown.artist ?: @"";
     _position = shown.current && state.duration > 0 ? MIN(1, MAX(0, state.position / state.duration)) : 0;
     // The clip covers the field, and the hills move over it, which then holds still, as in the player.
-    _field.motionHeld = state.isPaused || _motion != nil || _visualiser != nil;
+    _field.motionHeld = state.isPaused || _motion != nil || _visualiser != nil || (_shader != nil && SGRShaderReady());
     if (shown.current && SGRNowPlayingArtwork(NULL, NULL)) {
         [self artworkChanged];
     } else if (!shown.current && shown.artworkURL) {
@@ -202,12 +207,16 @@ static NSArray<NSString *> *backgroundNotes(void) {
         self->_motion = kind == SGRPlayerBackgroundAnimated ? SGRPlayerMotionPreview(arrived) : nil;
         if (self->_motion) [self insertSubview:self->_motion aboveSubview:self->_field];
         [self->_visualiser removeFromSuperview];
+        [self->_shader removeFromSuperview];
         SGRPlayerBackgroundKind effectiveKind = kind == SGRPlayerBackgroundAnimated
             ? SGRPlayerAnimatedFallback() : kind;
         self->_visualiser = effectiveKind == SGRPlayerBackgroundVisualiser && !self->_motion
             ? SGRPlayerVisualiserPreview() : nil;
         if (self->_visualiser) [self insertSubview:self->_visualiser aboveSubview:self->_field];
-        self->_field.motionHeld = SGPlayerState().isPaused || self->_motion != nil || self->_visualiser != nil;
+        self->_shader = effectiveKind == SGRPlayerBackgroundShader && !self->_motion
+            ? SGRPlayerShaderPreview() : nil;
+        if (self->_shader) [self insertSubview:self->_shader aboveSubview:self->_field];
+        self->_field.motionHeld = SGPlayerState().isPaused || self->_motion != nil || self->_visualiser != nil || (self->_shader != nil && SGRShaderReady());
     };
     self.accessibilityValue = [SGRPlayerBackgroundNames()[(NSUInteger)kind] stringByAppendingString:@" background"];
     if (animated && self.window) {
@@ -234,6 +243,7 @@ static NSArray<NSString *> *backgroundNotes(void) {
     _field.backdropHeight = h;
     _motion.frame = bounds;
     _visualiser.frame = bounds;
+    _shader.frame = bounds;
 
     _cover.frame = CGRectMake(kCardPadding, h - kCardPadding - kCoverSide, kCoverSide, kCoverSide);
     CGFloat x = CGRectGetMaxX(_cover.frame) + 12, width = w - kCardPadding - x;
@@ -321,7 +331,15 @@ static NSArray<NSString *> *backgroundNotes(void) {
 }
 
 - (void)backgroundPicked {
-    SGRPlayerMenuSetBackground((SGRPlayerBackgroundKind)self.backgrounds.selectedSegmentIndex);
+    SGRPlayerBackgroundKind picked = (SGRPlayerBackgroundKind)self.backgrounds.selectedSegmentIndex;
+    SGRPlayerMenuSetBackground(picked);
+    if (picked == SGRPlayerBackgroundPicture && !SGRPlayerPictureImage()) {
+        __weak SGRPlayerPage *weakSelf = self;
+        SGRPlayerPickPicture(self, ^{
+            [weakSelf.showcase reloadBackgroundAnimated:YES];
+            [weakSelf refreshVisibility];
+        });
+    }
     [self.showcase reloadBackgroundAnimated:YES];
     [self showNote];
     [self refreshVisibility];
@@ -379,12 +397,12 @@ UIViewController *SGRPlayerSettingsPage(NSArray *more) {
     BOOL (^fluidBackdrop)(void) = ^BOOL {
         SGRPlayerBackgroundKind kind = SGRPlayerBackground();
         if (kind == SGRPlayerBackgroundAnimated) kind = SGRPlayerAnimatedFallback();
-        return kind == SGRPlayerBackgroundFluid || kind == SGRPlayerBackgroundVisualiser;
+        return kind == SGRPlayerBackgroundFluid || kind == SGRPlayerBackgroundVisualiser || kind == SGRPlayerBackgroundShader;
     };
     SGModRow *animatedFallback = SGChoiceRow(@"Animated fallback",
                                                @"Background shown when Canvas is unavailable or cannot play",
                                                SGRKeyPlayerAnimatedFallback,
-                                               @[@"Still", @"Colors", @"Fluid", @"Visualiser", @"Fill"], 4);
+                                               @[@"Still", @"Colors", @"Fluid", @"Visualiser", @"Fill", @"Shader", @"Black", @"Picture"], 4);
     animatedFallback.visible = lowData.visible;
     animatedFallback.chosen = ^(NSInteger index) {
         (void)index;
@@ -393,10 +411,25 @@ UIViewController *SGRPlayerSettingsPage(NSArray *more) {
         [field refreshStyleAnimated:YES];
         SGRPlayerMotionCoverLaidOut();
         SGRPlayerVisualiserUpdate();
+        SGRPlayerShaderUpdate();
         SGRPlayerHoldField();
         [weakShowcase reloadBackgroundAnimated:NO];
         [weakPage.tableView reloadData];
     };
+    SGModRow *choosePicture = SGActionRow(@"Choose picture", @"Pick a photo from Photos for the Picture background", ^{
+        SGRPlayerPickPicture(weakPage, ^{
+            [weakShowcase reloadBackgroundAnimated:YES];
+            [weakPage.tableView reloadData];
+        });
+    });
+    choosePicture.visible = ^BOOL {
+        SGRPlayerBackgroundKind kind = SGRPlayerBackground();
+        if (kind == SGRPlayerBackgroundAnimated) kind = SGRPlayerAnimatedFallback();
+        return kind == SGRPlayerBackgroundPicture;
+    };
+    SGModRow *visualizerLyrics = SGOptionRow(@"Lyrics over the visualizer", @"Keep the song's words on top of the canvas", SGKeyVisualizerLyrics);
+    visualizerLyrics.visible = ^BOOL { return SGRPlayerVisualiserShowing(); };
+    visualizerLyrics.changed = ^(BOOL on) { SGRPlayerVisualiserUpdate(); };
     NSArray<SGLyricsProvider *> *providers = SGLyricsAllProviders();
     NSMutableArray<NSString *> *lyricsSourceNames = [NSMutableArray arrayWithObject:@"Automatic"];
     for (SGLyricsProvider *provider in providers) [lyricsSourceNames addObject:provider.name];
@@ -434,6 +467,32 @@ UIViewController *SGRPlayerSettingsPage(NSArray *more) {
     ];
     for (SGModRow *row in fluid) row.visible = fluidBackdrop;
 
+    SGModRow *shaderStyle = SGChoiceRow(@"Shader", @"The look drawn behind the player", SGRKeyShaderStyle,
+                                        SGRShaderNames(), 0);
+    shaderStyle.visible = ^BOOL {
+        SGRPlayerBackgroundKind kind = SGRPlayerBackground();
+        if (kind == SGRPlayerBackgroundAnimated) kind = SGRPlayerAnimatedFallback();
+        return kind == SGRPlayerBackgroundShader;
+    };
+    shaderStyle.chosen = ^(NSInteger index) {
+        (void)index;
+        SGRSetShaderIndex(index);
+        [weakShowcase reloadBackgroundAnimated:NO];
+    };
+    shaderStyle.value = ^NSString *{
+        NSArray *names = SGRShaderNames();
+        NSInteger index = SGRShaderIndex();
+        return index >= 0 && index < (NSInteger)names.count ? names[index] : names.firstObject;
+    };
+    __weak SGModRow *weakShaderStyle = shaderStyle;
+    shaderStyle.page = ^UIViewController *{
+        SGModRow *current = SGChoiceRow(@"Shader", nil, SGRKeyShaderStyle, SGRShaderNames(), 0);
+        current.chosen = weakShaderStyle.chosen;
+        return current.page();
+    };
+    shaderStyle.refreshOn = SGRShaderLibraryChangedNotification;
+    SGModRow *shaderLibrary = SGPageRow(@"Shader library", ^UIViewController *{ return SGRShaderLibrarySettingsPage(); });
+
     NSArray<SGModRow *> *blur = @[
         opacitySlider(@"Blurred artwork opacity", SGRKeyPlayerBackdropOpacity, stillOrFill, refreshArtworkOpacity),
         opacitySlider(@"Fill artwork opacity", SGRKeyPlayerFillOpacity,
@@ -447,20 +506,24 @@ UIViewController *SGRPlayerSettingsPage(NSArray *more) {
                       ^BOOL { return SGRPlayerBackground() == SGRPlayerBackgroundAnimated; }, refreshBlurOpacity),
         opacitySlider(@"Lyrics blur opacity", SGRKeyPlayerLyricsBlurOpacity,
                       ^BOOL { return SGRPlayerBackground() == SGRPlayerBackgroundAnimated; }, refreshBlurOpacity),
-        opacitySlider(@"Visualiser lyrics blur opacity", SGRKeyPlayerVisualiserBlurOpacity,
+        opacitySlider(@"Reactive lyrics blur opacity", SGRKeyPlayerVisualiserBlurOpacity,
                       ^BOOL {
                           SGRPlayerBackgroundKind kind = SGRPlayerBackground();
                           if (kind == SGRPlayerBackgroundAnimated) kind = SGRPlayerAnimatedFallback();
-                          return kind == SGRPlayerBackgroundVisualiser;
+                          return kind == SGRPlayerBackgroundVisualiser || kind == SGRPlayerBackgroundShader;
                       }, refreshBlurOpacity),
     ];
+
+    SGModRow *keepTitle = SGOptionRow(@"Keep title and cover", @"Leave the song's name and cover up", SGRKeyLyricsKeepTitle);
+    keepTitle.waitsOn = SGRKeyLyricsAutoHide;
 
     NSMutableArray<SGModSection *> *sections = [NSMutableArray arrayWithObjects:
         SGNotedSection(@"This song", @[lyricsBlur, lyricsSource],
                        @"Lyrics blur and source are remembered separately for each song."),
-        SGSection(nil, @[animatedFallback, sources, lowData]),
+        SGSection(nil, @[choosePicture, visualizerLyrics, animatedFallback, sources, lowData]),
         SGNotedSection(nil, fluid, @"Brightness above 100% can make white text harder to read. A paused song holds the "
                     @"background still. Animated and Visualiser use these where they show Fluid."),
+        SGSection(nil, @[shaderStyle, shaderLibrary]),
         SGNotedSection(@"Background opacity", blur, @"Lower opacity makes each background layer more transparent. "
                     @"Canvas and lyrics sliders reduce blur strength directly; at 0% the blur is fully transparent."),
         SGNotedSection(@"Controls", @[
@@ -468,8 +531,14 @@ UIViewController *SGRPlayerSettingsPage(NSArray *more) {
                                    SGRKeyPlayerAllowAutoLock),
                        SGSwitchRow(@"Auto-hide portrait controls", @"Bring them back with a tap after a few seconds",
                                    SGRKeyLyricsAutoHide),
+                       keepTitle,
                        SGSwitchRow(@"Auto-hide landscape controls", @"Bring them back with a tap after a few seconds",
                                    SGRKeyLyricsLandscapeAutoHide),
+                       SGOptionRow(@"Lyrics line under the cover", @"One line of the song as it plays", SGRKeyPlayerLyricLine),
+                       SGOptionRow(@"Music app top bar", @"Grabber at the top, ⋯ beside the title", SGRKeyPlayerMusicTop),
+                       SGOptionRow(@"Music app icons", @"Shuffle, repeat, devices and queue", SGRKeyPlayerMusicIcons),
+                       SGSwitchRow(@"Glass behind the top bar", @"On the close, context and ⋯ buttons", SGRKeyPlayerHeaderGlass),
+                       SGOptionRow(@"Glass queue and device panels", @"Keep the Liquid Glass background when pulled up", SGRKeyGlassSheets),
                        SGOptionRow(@"Show Sing button", @"Karaoke control in the player lyrics", SGRKeyPlayerKaraokeButton),
                        SGOptionRow(@"Show Translate button", @"Pronunciation and translation in the player lyrics", SGRKeyPlayerTranslateButton),
                        SGOptionRow(@"Show volume slider", @"Off by default", SGRKeyPlayerVolume),
@@ -477,9 +546,22 @@ UIViewController *SGRPlayerSettingsPage(NSArray *more) {
                        SGOptionRow(@"Follow the cover", nil, SGRKeyPlayerFollowsCover)],
                        @"The volume slider controls this iPhone, or the speaker while Spotify plays on another device. "
                        @"Follow the cover paints the like, shuffle and repeat in the color of the song playing."),
+        SGNotedSection(@"Hide", @[
+                       SGHideRow(@"Shuffle button", nil, SGRKeyPlayerHideShuffle),
+                       SGHideRow(@"Repeat button", nil, SGRKeyPlayerHideRepeat),
+                       SGHideRow(@"Switch to video chip", @"Over the title on tracks with a music video", SGRKeyPlayerHideVideoSwitch)],
+                       @"Applies after you restart Spotify."),
         SGNotedSection(@"Mini player", SGRNowPlayingBarRows(),
                        @"Apple Music style moves the now playing bar in between two tabs as you scroll down. "
                        @"The device button and moving background settings apply after you restart Spotify."), nil];
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        SGModRow *lyricsBeside = SGOptionRow(@"Lyrics beside the cover", @"Side by side when the player is wide enough", SGRKeyPlayerLyricsBeside);
+        lyricsBeside.waitsOn = SGRKeyPlayerFullScreen;
+        [sections addObject:SGNotedSection(@"iPad", @[
+            SGOptionRow(@"Open player full screen", @"Cover the iPad screen instead of a side panel", SGRKeyPlayerFullScreen),
+            lyricsBeside,
+        ], @"Applies after you restart Spotify.")];
+    }
     [sections addObjectsFromArray:more];
     NSString *footer = @"From the player's ⋯ menu, any background takes effect immediately. The background and opacity settings apply live; volume controls apply after you restart Spotify.";
     SGRPlayerPage *page = [[SGRPlayerPage alloc] initWithTitle:@"Player" intro:nil sections:sections footer:footer];

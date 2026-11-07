@@ -181,12 +181,30 @@ static CGRect untransformed(UIView *view, UIView *host) {
     return CGRectOffset(frame, -t.tx, -t.ty);
 }
 
+static BOOL besideCoverNow(UIView *host) {
+    return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad
+        && SGFlag(SGRKeyPlayerLyricsBeside, NO)
+        && host.bounds.size.width >= 680;
+}
+
 static SGRLyricsLayout layoutIn(UIView *host) {
     SGRLyricsLayout l = {0};
     UIView *info = sg_info.viewIfLoaded, *duration = sg_duration.viewIfLoaded, *title = sg_titleElement;
     if (!host || host.bounds.size.height < kLivingHeight || !info || !duration) return l;
     CGRect area = SGRPlayerArtworkAreaIn(host), cover = SGRPlayerCoverFrameIn(host);
     if (CGRectIsNull(area) || CGRectIsNull(cover)) return l;
+    if (besideCoverNow(host) && CGRectGetMaxX(cover) + 280 < host.bounds.size.width) {
+        l.cover = cover;
+        l.thumb = cover;
+        l.lift = 0;
+        l.shift = 0;
+        CGFloat stageX = CGRectGetMaxX(cover) + 32;
+        CGFloat stageY = MAX(host.safeAreaInsets.top + 48, CGRectGetMinY(area));
+        CGFloat stageH = host.bounds.size.height - stageY - host.safeAreaInsets.bottom - 24;
+        l.stage = CGRectMake(stageX, stageY, host.bounds.size.width - stageX - 32, stageH);
+        l.ok = l.stage.size.width >= 240 && l.stage.size.height > kLivingHeight / 2;
+        return l;
+    }
     CGRect row = untransformed(info, host), bar = untransformed(duration, host);
     // The thumbnail takes the title's own leading edge, so the two line up down the page.
     CGFloat leading = title ? CGRectGetMinX(untransformed(title, host)) : CGRectGetMinX(area) + SGRSideMargin;
@@ -337,30 +355,45 @@ static CGFloat thumbRadius(SGRLyricsLayout l, BOOL open) {
 static NSHashTable<UIView *> *sg_faded;
 
 static NSArray<UIView *> *controlViews(void) {
+    BOOL keepTitle = SGFlag(SGRKeyLyricsKeepTitle, NO);
     UIView *info = sg_info.viewIfLoaded, *floating = sg_floating.viewIfLoaded;
     NSMutableArray<UIView *> *views = [NSMutableArray array];
     UIView *stack = SGRFindByIdentifier(sg_host, @"npv.bottomStackView", &kStackKey);
     if (stack) {
         for (UIView *view in stack.subviews) {
-            if ([info isDescendantOfView:view] || [floating isDescendantOfView:view]) continue;
+            if ([floating isDescendantOfView:view]) continue;
+            if (keepTitle && [info isDescendantOfView:view]) continue;
             if (!view.hidden && view.alpha > 0.01) [views addObject:view];
         }
-        return views;
+    } else {
+        static NSArray<NSString *> *names;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            names = @[@"DurationElementUnit", @"PlaybackControlsElementsUnit", @"FooterElementsUnit"];
+        });
+        // A unit's view answers to its controller as its next responder, wherever the unit sits in the tree.
+        SGForEachView(sg_host, ^(UIView *view) {
+            UIResponder *owner = view.nextResponder;
+            if (![owner isKindOfClass:UIViewController.class] || ((UIViewController *)owner).viewIfLoaded != view) return;
+            NSString *name = NSStringFromClass(owner.class);
+            if (!keepTitle && [name hasSuffix:@"InformationElementsUnit"] && !view.hidden && view.alpha > 0.01) {
+                [views addObject:view];
+                return;
+            }
+            for (NSString *unit in names) {
+                if ([name hasSuffix:unit] && !view.hidden && view.alpha > 0.01) [views addObject:view];
+            }
+        });
     }
-    static NSArray<NSString *> *names;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        names = @[@"DurationElementUnit", @"PlaybackControlsElementsUnit", @"FooterElementsUnit"];
-    });
-    // A unit's view answers to its controller as its next responder, wherever the unit sits in the tree.
-    SGForEachView(sg_host, ^(UIView *view) {
-        UIResponder *owner = view.nextResponder;
-        if (![owner isKindOfClass:UIViewController.class] || ((UIViewController *)owner).viewIfLoaded != view) return;
-        NSString *name = NSStringFromClass(owner.class);
-        for (NSString *unit in names) {
-            if ([name hasSuffix:unit] && !view.hidden && view.alpha > 0.01) [views addObject:view];
-        }
-    });
+    if (!keepTitle) {
+        SGForEachView(sg_host, ^(UIView *view) {
+            UIResponder *owner = view.nextResponder;
+            if ([owner isKindOfClass:UIViewController.class] && ((UIViewController *)owner).viewIfLoaded == view
+                && [NSStringFromClass(owner.class) hasSuffix:@"HeaderElementsUnit"] && !view.hidden && view.alpha > 0.01) {
+                [views addObject:view];
+            }
+        });
+    }
     return views;
 }
 
@@ -382,11 +415,12 @@ BOOL SGRLyricsFadedView(UIView *view) {
 }
 
 // Where the lines go on their own: from where they start under the title row down to the bottom of the
-// safe area, over the controls that faded.
+// safe area, over the controls that faded (or from the top safe area when Keep title and cover is off).
 static CGRect aloneStage(UIView *host, SGRLyricsLayout l) {
     CGRect safe = UIEdgeInsetsInsetRect(host.bounds, host.safeAreaInsets);
-    return CGRectMake(CGRectGetMinX(l.stage), CGRectGetMinY(l.stage), l.stage.size.width,
-                      CGRectGetMaxY(safe) - kLyricsBottom - CGRectGetMinY(l.stage));
+    CGFloat minY = SGFlag(SGRKeyLyricsKeepTitle, NO) ? CGRectGetMinY(l.stage) : CGRectGetMinY(safe) + 12;
+    return CGRectMake(CGRectGetMinX(l.stage), minY, l.stage.size.width,
+                      CGRectGetMaxY(safe) - kLyricsBottom - minY);
 }
 
 // The lines' tap seeks, so it is off while they are alone. Back on a turn of the run loop later: the tap
@@ -573,7 +607,11 @@ static void setAlone(BOOL alone, BOOL animated) {
         [overlay.lyrics layoutIfNeeded];
     };
     void (^fade)(void) = ^{
-        if (overlay.superview) overlay.lyrics.extrasHidden = alone;
+        if (overlay.superview) {
+            overlay.lyrics.extrasHidden = alone;
+            BOOL hideThumb = alone && !SGFlag(SGRKeyLyricsKeepTitle, NO) && !besideCoverNow(host);
+            overlay.thumb.alpha = SGRPlayerMotionShowing() || hideThumb ? 0 : 1;
+        }
         fadeControls(alone);
     };
     sg_wake.enabled = alone;
@@ -717,6 +755,8 @@ static void replace(void) {
     }
     place(overlay, host, l);
     overlay.thumb.transform = thumbTransform(l);
+    BOOL hideThumb = sg_alone && !SGFlag(SGRKeyLyricsKeepTitle, NO) && !besideCoverNow(host);
+    overlay.thumb.alpha = SGRPlayerMotionShowing() || hideThumb ? 0 : 1;
     overlay.cover.layer.cornerRadius = thumbRadius(l, YES);
     overlay.lyrics.frame = overlay.stage.bounds;
     SGRPlayerCoverList().alpha = 0;
@@ -784,6 +824,13 @@ static void replace(void) {
 - (void)viewDidLayoutSubviews {
     %orig;
     sg_floating = (UIViewController *)self;
+    if (SGHidden(SGRKeyPlayerHideVideoSwitch)) {
+        SGForEachView(((UIViewController *)self).viewIfLoaded, ^(UIView *view) {
+            if ([view.accessibilityIdentifier isEqualToString:@"nowplaying-npv-musicvideos-switch"]) {
+                SGRPlayerVanish(view);
+            }
+        });
+    }
     replace();
 }
 %end

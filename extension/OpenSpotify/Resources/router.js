@@ -11,6 +11,10 @@
         try { url = new URL(input); } catch { return null; }
         // Convert known URI forms back through the same path validator.
         if (url.protocol === "spotify:") {
+            // Verified in Spotify 9.1.90: spotify:socialsession:<invitation token>.
+            // Invitation parameters belong to the native handler, not the tracking filter.
+            if (/^socialsession:[A-Za-z0-9_-]{1,200}$/.test(url.pathname) && !url.hash)
+                return "spotify:" + url.pathname + url.search;
             const body = input.slice(8).replace(/^\/\//, "");
             if (body.includes("?") || body.includes("#")) return null;
             return parse("https://open.spotify.com/" + body.replace(/:/g, "/"), depth + 1);
@@ -33,6 +37,8 @@
         for (let i = 0; i < 2; i++) {
             if (/^intl-[a-z]{2}(?:-[a-z]{2})?$/i.test(parts[0]) || parts[0] === "embed") parts.shift();
         }
+        if (parts[0] === "socialsession" && parts.length === 2 && token.test(parts[1]) && !url.hash)
+            return "spotify:socialsession:" + parts[1] + url.search;
         let uri = null;
         if (contentTypes.has(parts[0]) && parts.length === 2 && /^[A-Za-z0-9]{22}$/.test(parts[1])) {
             uri = "spotify:" + parts.join(":");

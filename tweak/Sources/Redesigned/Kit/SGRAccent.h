@@ -1,6 +1,12 @@
 #import <UIKit/UIKit.h>
 
 #define SGRKeyAccent @"spotifyglass.redesign.accent"   // 0xRRGGBB
+#define SGRKeyAccentAuto @"spotifyglass.redesign.accent.auto"
+#define SGRKeyAccentRecent @"spotifyglass.redesign.accent.recent"
+#define SGRKeyPrettierIcons @"spotifyglass.redesign.prettierIcons"
+#define SGKeyHideExplicit @"spotifyglass.hideExplicit"
+
+extern NSNotificationName const SGRAccentDidChangeNotification;
 
 UIColor *SGRAccentColor(void);   // nil while Spotify's own green is kept
 NSString *SGRAccentLabel(void);  // "#RRGGBB", or the name of Spotify's own

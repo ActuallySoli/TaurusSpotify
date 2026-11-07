@@ -5,7 +5,7 @@
 //     Speed, Pitch & Reverb   opens the sliders in a popover from the ⋯ (SGPlayerMenuSpeedPitch): speed,
 //                             pitch, reverb and Pitch follows speed, as on Spotify's sheet (issue #14)
 //     Lock Screen Style       chooses the lock screen's current artwork or Lyrics
-//     Background Style        the six backgrounds offered in Player settings
+//     Background Style        the backgrounds offered in Player settings
 //
 // The item says under its name what is not as Spotify plays it, so the menu reads as a settings summary.
 #import "Core/SGCore.h"

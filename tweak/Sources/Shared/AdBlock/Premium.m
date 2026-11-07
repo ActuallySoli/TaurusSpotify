@@ -1,6 +1,7 @@
 #import "Core/SGCore.h"
 #import "AdBlock.h"
 #import "Protobuf.h"
+#import "Shared/Jam/Jam.h"
 
 #pragma mark - account attributes
 
@@ -9,7 +10,7 @@ static NSDictionary<NSString *, id> *forcedAttributes(void) {
     NSISO8601DateFormatter *iso = [NSISO8601DateFormatter new];
     iso.timeZone = [NSTimeZone timeZoneWithAbbreviation:@"UTC"];
     NSString *yearOn = [iso stringFromDate:[NSCalendar.currentCalendar dateByAddingUnit:NSCalendarUnitYear value:1 toDate:NSDate.date options:0]];
-    return @{
+    NSMutableDictionary *attributes = [@{
         @"ads": @NO,
         @"ab-ad-player-targeting": @"0",
         @"allow-advertising-id-transmission": @NO,
@@ -36,10 +37,18 @@ static NSDictionary<NSString *, id> *forcedAttributes(void) {
         @"loudness-levels": @"1:-5.0,0.0,3.0:-2.0",
         @"pick-and-shuffle": @NO,
         @"mixing-tools": @"EDIT",
+        @"jam-social-session": @"EXPANDED",
+        @"jam-queue-commands-feedback": @"1",
+        @"social-session": @YES,
+        @"social-session-free-tier": @NO,
         @"your-library-tags": @YES,
         @"libspotify": @YES,
         @"mobile": @YES,
-    };
+    } mutableCopy];
+    if (SGJamUsesAccountIdentity()) [attributes removeObjectsForKeys:@[
+        @"catalogue", @"financial-product", @"name", @"type", @"product-expiry", @"subscription-enddate", @"is-eligible-premium-unboxing",
+    ]];
+    return attributes;
 }
 
 // Attributes that would have the client validate the state against the server, or offer a trial.
@@ -150,6 +159,11 @@ static const SGRule rules[] = {
     {"ios-jam-freeusershuffleupsellsheetpage-impl", "free_user_shuffle_upsell_sheet_enabled", SGRuleForce, NO, NULL},
     {"ios-jam-freeuserskipupsellpage-impl", "free_user_skip_upsell_sheet_enabled", SGRuleForce, NO, NULL},
     {"ios-jam-freehostedjamsupsell-impl", "free_hosted_jams_upsell_enabled", SGRuleForce, NO, NULL},
+    {"ios-jam-adsdisclaimersheetpage-impl", "ads_disclaimer_sheet_enabled", SGRuleForce, NO, NULL},
+    {"ios-sociallistening-configuration-impl", "free_user_enabled_to_host_in_person_jam", SGRuleForce, YES, NULL},
+    {"ios-sociallistening-configuration-impl", "is_nearby_jam_invite_deeplink_enabled", SGRuleForce, YES, NULL},
+    {"ios-sociallistening-configuration-impl", "join_sheet_from_join_options_enabled", SGRuleForce, YES, NULL},
+    {"ios-sociallistening-configuration-impl", "nearby_session_invitation_enabled", SGRuleForce, YES, NULL},
     {"ios-reinventfree-contextualupsellpremiumpromo-impl", "is_promo_cta_enabled", SGRuleForce, NO, NULL},
     {"ios-reinventfree-contextualupsellpremiumpromo-impl", "show_time_cap_upsell_with_premium_badge", SGRuleForce, NO, NULL},
     {"ios-reinventfree-controllerui-impl", "enable_video_time_cap_upsell", SGRuleForce, NO, NULL},
@@ -338,7 +352,6 @@ static const SGRule rules[] = {
     {NULL, "enable_sponsored_home_results_v2", SGRuleSet, NO, NULL},
     {"ios-feature-search", "prompted_playlist_merchandizing_enabled", SGRuleSet, NO, NULL},
     {NULL, "should_nova_scroll_use_scrollsita", SGRuleRemove, NO, NULL},
-    {"ios-sociallistening-configuration-impl", "premium_gated_start_jam_buttons_enabled", SGRuleForce, YES, NULL},
 };
 static const size_t ruleCount = sizeof(rules) / sizeof(rules[0]);
 

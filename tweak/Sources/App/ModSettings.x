@@ -8,10 +8,18 @@
 #import "Shared/Player/PlayerSettings.h"
 #import "Redesigned/Album/Album.h"
 #import "Redesigned/Artist/Artist.h"
+#import "Redesigned/Home/Home.h"
+#import "Redesigned/Library/Library.h"
 #import "Redesigned/Lyrics/Sing.h"
+#import "Redesigned/Playlist/Playlist.h"
+#import "Redesigned/Search/Search.h"
 #import "Shared/Sing/SGSingModel.h"
 #import "Shared/Flags/Flags.h"
 #import "Shared/AudioEffects/AudioEffectsPage.h"
+#import "Shared/Ambient/Ambient.h"
+#import "Shared/AutoMix/AutoMix.h"
+#import "Shared/LocalFiles/LocalFiles.h"
+#import "Shared/Jam/WebJam.h"
 #import "Shared/LiveActivity/LiveActivity.h"
 #import "Shared/HeadGestures/HeadGestures.h"
 #import "Shared/Haptics/Haptics.h"
@@ -57,13 +65,16 @@ static UIColor *SGRainbowTextColor(CGFloat width, CGFloat height, double phase) 
     return [UIColor colorWithPatternImage:image];
 }
 
-@interface SGTaurusSettingsPage : SGModPage
+@interface SGTaurusSettingsPage : SGModPage <UITextFieldDelegate>
 - (instancetype)initWithSections:(NSArray<SGModSection *> *)sections;
 @end
 
 @implementation SGTaurusSettingsPage {
+    NSArray<SGModSection *> *_allSections;
+    NSArray<SGModSection *> *_indexedChildSections;
     UIView *_masthead;
     UILabel *_mastheadTitle, *_mastheadByline, *_compactTitle;
+    UISearchTextField *_searchField;
     BOOL _compactTitleVisible;
     CADisplayLink *_rainbowLink;
     CFTimeInterval _rainbowLast;
@@ -71,12 +82,14 @@ static UIColor *SGRainbowTextColor(CGFloat width, CGFloat height, double phase) 
 }
 
 - (instancetype)initWithSections:(NSArray<SGModSection *> *)sections {
-    return [super initWithTitle:@"taurus" intro:nil sections:sections footer:@"Contributor: @Pulse-Ice (EeveeImmersive)\nBug fixes: @darkit"];
+    if (!(self = [super initWithTitle:@"taurus" intro:nil sections:sections footer:@"Contributor: @Pulse-Ice (EeveeImmersive)\nBug fixes: @darkit"])) return nil;
+    _allSections = [sections copy];
+    return self;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    _masthead = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width, 132)];
+    _masthead = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width, 168)];
     _masthead.backgroundColor = SGPageBackground();
     _masthead.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     _mastheadTitle = [UILabel new];
@@ -89,8 +102,16 @@ static UIColor *SGRainbowTextColor(CGFloat width, CGFloat height, double phase) 
     _mastheadByline.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
     _mastheadByline.textColor = [UIColor colorWithWhite:1 alpha:0.72];
     _mastheadByline.textAlignment = NSTextAlignmentRight;
+    _searchField = [[UISearchTextField alloc] initWithFrame:CGRectZero];
+    _searchField.placeholder = @"Search settings";
+    _searchField.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    _searchField.returnKeyType = UIReturnKeyDone;
+    _searchField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    _searchField.delegate = self;
+    [_searchField addTarget:self action:@selector(searchChanged:) forControlEvents:UIControlEventEditingChanged];
     [_masthead addSubview:_mastheadTitle];
     [_masthead addSubview:_mastheadByline];
+    [_masthead addSubview:_searchField];
     self.tableView.tableHeaderView = _masthead;
 
     _compactTitle = [UILabel new];
@@ -102,6 +123,74 @@ static UIColor *SGRainbowTextColor(CGFloat width, CGFloat height, double phase) 
     _compactTitle.isAccessibilityElement = YES;
     _compactTitle.accessibilityElementsHidden = YES;
     self.navigationItem.titleView = _compactTitle;
+}
+
+- (BOOL)textFieldShouldReturn:(UITextField *)textField {
+    [textField resignFirstResponder];
+    return YES;
+}
+
+static void collectSectionsFromPage(NSString *prefix, SGModPage *page, NSMutableArray<SGModSection *> *into, int depth) {
+    if (![page isKindOfClass:SGModPage.class] || depth > 2) return;
+    for (SGModSection *sec in page.sections) {
+        NSString *secTitle = sec.title.length ? [NSString stringWithFormat:@"%@ › %@", prefix, sec.title] : prefix;
+        [into addObject:SGSection(secTitle, sec.rows)];
+        for (SGModRow *row in sec.rows) {
+            if (row.page && depth < 2) {
+                UIViewController *child = row.page();
+                if ([child isKindOfClass:SGModPage.class]) {
+                    collectSectionsFromPage([NSString stringWithFormat:@"%@ › %@", prefix, row.title], (SGModPage *)child, into, depth + 1);
+                }
+            }
+        }
+    }
+}
+
+- (NSArray<SGModSection *> *)indexedChildSections {
+    if (_indexedChildSections) return _indexedChildSections;
+    NSMutableArray<SGModSection *> *collected = [NSMutableArray array];
+    for (SGModSection *sec in _allSections) {
+        for (SGModRow *row in sec.rows) {
+            if (!row.page || [row.title isEqualToString:@"All flags"]) continue;
+            UIViewController *child = row.page();
+            if ([child isKindOfClass:SGModPage.class]) {
+                collectSectionsFromPage(row.title, (SGModPage *)child, collected, 1);
+            }
+        }
+    }
+    _indexedChildSections = [collected copy];
+    return _indexedChildSections;
+}
+
+- (void)searchChanged:(UITextField *)field {
+    NSString *query = [field.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!query.length) {
+        [self setSections:_allSections];
+        return;
+    }
+    NSMutableArray<SGModSection *> *results = [NSMutableArray array];
+    NSMutableArray<SGModRow *> *rootMatches = [NSMutableArray array];
+    for (SGModSection *sec in _allSections) {
+        for (SGModRow *row in sec.rows) {
+            if ([row.title localizedCaseInsensitiveContainsString:query]
+                || (row.subtitle && [row.subtitle localizedCaseInsensitiveContainsString:query])) {
+                [rootMatches addObject:row];
+            }
+        }
+    }
+    if (rootMatches.count) [results addObject:SGSection(@"Pages", rootMatches)];
+    for (SGModSection *sec in [self indexedChildSections]) {
+        NSMutableArray<SGModRow *> *matchingRows = [NSMutableArray array];
+        for (SGModRow *row in sec.rows) {
+            if ([row.title localizedCaseInsensitiveContainsString:query]
+                || (row.subtitle && [row.subtitle localizedCaseInsensitiveContainsString:query])
+                || (sec.title && [sec.title localizedCaseInsensitiveContainsString:query])) {
+                [matchingRows addObject:row];
+            }
+        }
+        if (matchingRows.count) [results addObject:SGSection(sec.title, matchingRows)];
+    }
+    [self setSections:results];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -157,14 +246,15 @@ static UIColor *SGRainbowTextColor(CGFloat width, CGFloat height, double phase) 
     [super viewDidLayoutSubviews];
     CGFloat width = self.tableView.bounds.size.width;
     if (width > 0) {
-        BOOL sizeChanged = _masthead.bounds.size.width != width || _masthead.bounds.size.height != 132;
-        _masthead.frame = CGRectMake(0, 0, width, 132);
+        BOOL sizeChanged = _masthead.bounds.size.width != width || _masthead.bounds.size.height != 168;
+        _masthead.frame = CGRectMake(0, 0, width, 168);
         if (sizeChanged || self.tableView.tableHeaderView != _masthead) self.tableView.tableHeaderView = _masthead;
         _masthead.backgroundColor = UIColor.blackColor;
         _mastheadByline.textColor = UIColor.whiteColor;
         CGSize title = _mastheadTitle.bounds.size;
         _mastheadTitle.frame = CGRectMake(MAX(16, width - 16 - title.width), 24 + (48 - title.height) / 2, title.width, title.height);
         _mastheadByline.frame = CGRectMake(16, 72, MAX(0, width - 32), 24);
+        _searchField.frame = CGRectMake(16, 110, MAX(0, width - 32), 38);
     }
     [self updateCompactTitleForScrollView:self.tableView];
 }
@@ -230,14 +320,25 @@ static UIViewController *modSettingsPage(void) {
     SGModRow *downloads = pageRow(@"Downloads", @"arrow.down.circle", ^UIViewController *{ return SGDownloadsSettingsPage(); });
     downloads.value = ^NSString *{ return SGDownloadsRowSummary(); };
     downloads.refreshOn = SGDownloadsDidChangeNotification;
+    SGModRow *ambient = pageRow(@"Ambient", @"cloud.rain", ^UIViewController *{ return SGAmbientSettingsPage(); });
+    ambient.value = ^NSString *{ return SGAmbientSummary(); };
+    ambient.refreshOn = SGAmbientDidChangeNotification;
+    // Web Jam also lives under Premium, ads & privacy → Jam; the root row makes the browser queue findable.
+    SGModRow *webJam = pageRow(@"Web Jam", @"globe", ^UIViewController *{ return SGWebJamPage(); });
+    webJam.value = ^NSString *{ return SGWebJamStatus(); };
+    webJam.refreshOn = SGWebJamDidChangeNotification;
     NSMutableArray<SGModRow *> *parts = [NSMutableArray arrayWithArray:@[
         pageRow(@"Appearance", @"paintpalette", ^UIViewController *{ return SGAppearanceSettingsPage(); }),
         pageRow(@"Navbar", @"dock.rectangle", ^UIViewController *{ return SGNavbarPage(); }),
         pageRow(@"Player", @"play.circle", ^UIViewController *{ return SGPlayerSettingsPage(); }),
         pageRow(@"Lyrics", @"quote.bubble", ^UIViewController *{ return SGLyricsSettingsPage(); }),
         downloads,
+        pageRow(@"Your files", @"folder", ^UIViewController *{ return SGLocalFilesSettingsPage(); }),
         pageRow(@"Lock Screen", @"lock.iphone", ^UIViewController *{ return SGLockScreenSettingsPage(); }),
         audioEffects,
+        ambient,
+        pageRow(@"AutoMix", @"waveform.path", ^UIViewController *{ return SGAutoMixSettingsPage(); }),
+        webJam,
         pageRow(@"Vibrations", @"iphone.radiowaves.left.and.right", ^UIViewController *{ return SGVibrationsSettingsPage(); }),
     ]];
     if (@available(iOS 17.0, *)) {
@@ -250,6 +351,10 @@ static UIViewController *modSettingsPage(void) {
         pageRow(@"Listening stats", @"chart.bar", ^UIViewController *{ return SGListeningStatsPage(); }),
     ]];
     if (SGRedesignedUIStored()) {
+        [parts addObject:pageRow(@"Home", @"house", ^UIViewController *{ return SGRHomeSettingsPage(); })];
+        [parts addObject:pageRow(@"Search", @"magnifyingglass", ^UIViewController *{ return SGRSearchSettingsPage(); })];
+        [parts addObject:pageRow(@"Library", @"books.vertical", ^UIViewController *{ return SGRLibrarySettingsPage(); })];
+        [parts addObject:pageRow(@"Playlists", @"music.note.list", ^UIViewController *{ return SGRPlaylistSettingsPage(); })];
         [parts addObject:pageRow(@"Albums", @"square.stack", ^UIViewController *{ return SGRAlbumSettingsPage(); })];
         [parts addObject:pageRow(@"Artists", @"person.2", ^UIViewController *{ return SGRArtistSettingsPage(); })];
     }
