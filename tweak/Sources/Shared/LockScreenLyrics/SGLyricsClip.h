@@ -9,15 +9,44 @@ typedef NS_ENUM(NSInteger, SGLyricsClipStyle) {
     SGLyricsClipAnimated,    // the cover breathes behind the words, in a loop
 };
 
+// Where the words sit against the artwork. Words runs over the whole screen as before; the rest keep
+// the cover itself in sight -- Poster holds it sharp above the line, Vinyl spins it as a record,
+// Messages speaks the line in a chat bubble beside it, Polaroid prints it in a tilted frame with the
+// line on the chin, Stickers pastes it on as a die-cut with the line on a label, Duotone tints it to
+// two tones under the line.
+typedef NS_ENUM(NSInteger, SGLyricsClipComposition) {
+    SGLyricsClipWords = 0,   // the line over the blurred cover, full screen
+    SGLyricsClipPoster,      // the cover, sharp and rounded, above the line
+    SGLyricsClipVinyl,       // the cover as a spinning record, the line under it
+    SGLyricsClipMessages,    // the line in a chat bubble beside the cover
+    SGLyricsClipPolaroid,    // the cover as a tilted print, the line written on the chin
+    SGLyricsClipStickers,    // the cover as a die-cut sticker, the line on a label sticker
+    SGLyricsClipDuotone,     // the cover tinted to two tones, the line on it
+};
+
+NSArray<NSString *> *SGLyricsClipCompositionNames(void);
+
 // The 3:4 size of a clip `pixels` wide, both sides a multiple of 16 for the encoder.
 CGSize SGLyricsClipSize(CGFloat pixels);
 // The cover blurred and darkened to fill `size`, made once per track; a dark field for a NULL cover.
 CGImageRef SGLyricsClipBackdrop(CGImageRef cover, CGSize size) CF_RETURNS_RETAINED;
 // The clip's first frame, for the lock screen's preview image. `line` or `next` may be nil.
+// The `In` forms take the composition and the sharp cover; the plain ones are the Words look.
 CGImageRef SGLyricsClipFrame(CGImageRef backdrop, NSString *line, NSString *next, CGSize size) CF_RETURNS_RETAINED;
+CGImageRef SGLyricsClipFrameIn(CGImageRef backdrop, CGImageRef cover, NSString *line, NSString *next, CGSize size,
+                               SGLyricsClipStyle style, SGLyricsClipComposition composition) CF_RETURNS_RETAINED;
 // Writes the clip as H.264 to `file`, replacing it, and returns once it is written; NO if it was not.
 BOOL SGLyricsClipWrite(NSURL *file, CGImageRef backdrop, NSString *line, NSString *next, CGSize size, SGLyricsClipStyle style);
+BOOL SGLyricsClipWriteIn(NSURL *file, CGImageRef backdrop, CGImageRef cover, NSString *line, NSString *next, CGSize size,
+                         SGLyricsClipStyle style, SGLyricsClipComposition composition);
 BOOL SGLyricsClipWriteOverMotion(NSURL *file, NSURL *motion, NSString *previous, NSString *line, NSString *next,
-                                 double from, double seconds);
-NSString *SGLyricsClipLook(NSURL *motion, SGLyricsClipStyle style);
+                                  double from, double seconds);
+// The cache key of a clip: the moving artwork, the style and the composition.
+NSString *SGLyricsClipLook(NSURL *motion, SGLyricsClipStyle style, SGLyricsClipComposition composition);
 CGImageRef SGLyricsClipMotionFrame(NSURL *motion, NSString *previous, NSString *line, NSString *next, double from) CF_RETURNS_RETAINED;
+
+// Track-relative phase keeps the record's angle continuous when the current lyric changes.
+CGImageRef SGLyricsClipFrameInAtTime(CGImageRef backdrop, CGImageRef cover, NSString *line, NSString *next, CGSize size,
+                                    SGLyricsClipStyle style, SGLyricsClipComposition composition, double from) CF_RETURNS_RETAINED;
+BOOL SGLyricsClipWriteInAtTime(NSURL *file, CGImageRef backdrop, CGImageRef cover, NSString *line, NSString *next, CGSize size,
+                              SGLyricsClipStyle style, SGLyricsClipComposition composition, double from);

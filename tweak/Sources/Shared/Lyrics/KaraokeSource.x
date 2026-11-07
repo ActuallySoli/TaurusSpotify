@@ -104,6 +104,124 @@ static BOOL hasTranslations(NSArray<SGKaraokeLine *> *lines) {
     return NO;
 }
 
+static NSString *lyricsCacheDirectory(void) {
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    if (!docs.length) return nil;
+    NSString *dir = [docs stringByAppendingPathComponent:@"spoti.pw/Lyrics"];
+    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    return dir;
+}
+
+static NSString *lyricsCachePath(NSString *trackID) {
+    if (!trackID.length) return nil;
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"];
+    NSString *clean = [[trackID componentsSeparatedByCharactersInSet:allowed.invertedSet] componentsJoinedByString:@"_"];
+    if (!clean.length) return nil;
+    return [lyricsCacheDirectory() stringByAppendingPathComponent:[clean stringByAppendingString:@".plist"]];
+}
+
+static NSDictionary *serializeKaraokeLine(SGKaraokeLine *line) {
+    if (!line) return nil;
+    NSMutableArray *words = [NSMutableArray arrayWithCapacity:line.words.count];
+    for (SGKaraokeWord *w in line.words) {
+        [words addObject:@{
+            @"text": w.text ?: @"",
+            @"start": @(w.start),
+            @"end": @(w.end),
+            @"joined": @(w.joined),
+        }];
+    }
+    NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithDictionary:@{
+        @"words": words,
+        @"start": @(line.start),
+        @"end": @(line.end),
+        @"align": @(line.align),
+        @"timing": @(line.timing),
+        @"translationMade": @(line.translationMade),
+    }];
+    if (line.voice.length) dict[@"voice"] = line.voice;
+    if (line.translation.length) dict[@"translation"] = line.translation;
+    if (line.backing) dict[@"backing"] = serializeKaraokeLine(line.backing);
+    if (line.pronunciation) dict[@"pronunciation"] = serializeKaraokeLine(line.pronunciation);
+    return dict;
+}
+
+static SGKaraokeLine *deserializeKaraokeLine(NSDictionary *dict) {
+    if (![dict isKindOfClass:NSDictionary.class]) return nil;
+    SGKaraokeLine *line = [SGKaraokeLine new];
+    NSMutableArray<SGKaraokeWord *> *words = [NSMutableArray array];
+    for (NSDictionary *wd in [dict[@"words"] isKindOfClass:NSArray.class] ? dict[@"words"] : @[]) {
+        if (![wd isKindOfClass:NSDictionary.class]) continue;
+        SGKaraokeWord *w = [SGKaraokeWord new];
+        w.text = [wd[@"text"] isKindOfClass:NSString.class] ? wd[@"text"] : @"";
+        w.start = [wd[@"start"] integerValue];
+        w.end = [wd[@"end"] integerValue];
+        w.joined = [wd[@"joined"] boolValue];
+        [words addObject:w];
+    }
+    line.words = words;
+    line.start = [dict[@"start"] integerValue];
+    line.end = [dict[@"end"] integerValue];
+    line.align = (SGKaraokeAlign)[dict[@"align"] unsignedIntegerValue];
+    line.timing = (SGKaraokeTiming)[dict[@"timing"] unsignedIntegerValue];
+    line.translationMade = [dict[@"translationMade"] boolValue];
+    if ([dict[@"voice"] isKindOfClass:NSString.class]) line.voice = dict[@"voice"];
+    if ([dict[@"translation"] isKindOfClass:NSString.class]) line.translation = dict[@"translation"];
+    if ([dict[@"backing"] isKindOfClass:NSDictionary.class]) line.backing = deserializeKaraokeLine(dict[@"backing"]);
+    if ([dict[@"pronunciation"] isKindOfClass:NSDictionary.class]) line.pronunciation = deserializeKaraokeLine(dict[@"pronunciation"]);
+    return line;
+}
+
+static void saveLyricsToDiskIfEnabled(NSString *trackID, NSArray<SGKaraokeLine *> *lines) {
+    if (!SGFlag(SGKeyLyricsCache, NO) || !trackID.length || !lines.count) return;
+    NSString *path = lyricsCachePath(trackID);
+    if (!path) return;
+    NSMutableArray *serialized = [NSMutableArray arrayWithCapacity:lines.count];
+    for (SGKaraokeLine *line in lines) {
+        NSDictionary *d = serializeKaraokeLine(line);
+        if (d) [serialized addObject:d];
+    }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        [serialized writeToFile:path atomically:YES];
+    });
+}
+
+static NSArray<SGKaraokeLine *> *loadLyricsFromDisk(NSString *trackID) {
+    if (!SGFlag(SGKeyLyricsCache, NO) || !trackID.length) return nil;
+    NSString *path = lyricsCachePath(trackID);
+    if (!path || ![NSFileManager.defaultManager fileExistsAtPath:path]) return nil;
+    NSArray *raw = [NSArray arrayWithContentsOfFile:path];
+    if (![raw isKindOfClass:NSArray.class] || !raw.count) return nil;
+    NSMutableArray<SGKaraokeLine *> *lines = [NSMutableArray arrayWithCapacity:raw.count];
+    for (NSDictionary *d in raw) {
+        SGKaraokeLine *line = deserializeKaraokeLine(d);
+        if (line) [lines addObject:line];
+    }
+    return lines.count ? lines : nil;
+}
+
+NSUInteger SGLyricsCachedTrackCount(void) {
+    NSString *dir = lyricsCacheDirectory();
+    if (!dir) return 0;
+    NSArray<NSString *> *files = [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil];
+    NSUInteger count = 0;
+    for (NSString *f in files) {
+        if ([f.pathExtension isEqualToString:@"plist"]) count++;
+    }
+    return count;
+}
+
+void SGLyricsClearCache(void) {
+    NSString *dir = lyricsCacheDirectory();
+    if (!dir) return;
+    NSArray<NSString *> *files = [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil];
+    for (NSString *f in files) {
+        if ([f.pathExtension isEqualToString:@"plist"]) {
+            [NSFileManager.defaultManager removeItemAtPath:[dir stringByAppendingPathComponent:f] error:nil];
+        }
+    }
+}
+
 // Lines with no translation of their own take Musixmatch's community ones in the Lyrics page's language,
 // whichever source they came from, Spotify's own included, matched by their text. Only the redesign shows
 // translations, so the native look asks for none. The translated lines are copies kept in place of the
@@ -117,7 +235,10 @@ static void translate(NSString *track) {
         NSArray<SGKaraokeLine *> *kept = sg_lyrics[track];
         if (!byLine || hasTranslations(kept)) return;
         NSArray<SGKaraokeLine *> *translated = SGMusixmatchTranslatedLines(kept, byLine);
-        if (translated) sg_lyrics[track] = translated;
+        if (translated) {
+            sg_lyrics[track] = translated;
+            saveLyricsToDiskIfEnabled(track, translated);
+        }
     });
 }
 
@@ -153,7 +274,10 @@ static void keep(NSString *track, NSArray<SGKaraokeLine *> *lines) {
         }
     }
     sg_lyrics[track] = SGKaraokeInTimeOrder(lines);
-    if (lines.count) translate(track);
+    if (lines.count) {
+        saveLyricsToDiskIfEnabled(track, sg_lyrics[track]);
+        translate(track);
+    }
     announce(track);
 }
 
@@ -185,7 +309,13 @@ static void completed(NSURLSessionTask *task, NSError *error) {
 }
 
 NSArray<SGKaraokeLine *> *SGKaraokeLinesForTrack(NSString *trackID) {
-    return trackID ? sg_lyrics[trackID] : nil;
+    if (!trackID) return nil;
+    NSArray<SGKaraokeLine *> *lines = sg_lyrics[trackID];
+    if (!lines) {
+        lines = loadLyricsFromDisk(trackID);
+        if (lines) sg_lyrics[trackID] = lines;
+    }
+    return lines;
 }
 
 // Main queue only. The track stays asked for through the pause, so the readers asking on every tick

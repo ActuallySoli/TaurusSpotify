@@ -39,10 +39,16 @@ void SGRHomeProbeEnd(SGRHomeProbe probe, CFTimeInterval began);
 // The "Home page" switch of Appearance: on, the glass Home (mixes first, glass pills, gradient, scrolling header);
 // off, the Home as it was. Read once at launch (HomeCards.x).
 #define SGRKeyHomeGlass @"spotifyglass.redesign.home.glass"
-#define SGRKeyHomeTopPicks @"spotifyglass.redesign.home.toppicks"
+#define SGRKeyHomeTopPicks @"spotifyglass.redesign.home.topPicks"
+#define SGRKeyHomeTopPicksColor @"spotifyglass.redesign.home.topPicksColor"
+#define SGRKeyHomeHideShortcuts @"spotifyglass.redesign.home.hideShortcuts"
+#define SGRKeyHomeHideDJ @"spotifyglass.redesign.home.hideDJ"
+#define SGRKeyHomeShowSuggestions @"spotifyglass.redesign.home.showSuggestions"
+#define SGRKeyHomeShowPreviews @"spotifyglass.redesign.home.showPreviews"
 BOOL SGRHomeGlassStyle(void);
 SGModRow *SGRHomeStyleRow(void);
 SGModRow *SGRHomeTopPicksRow(void);
+UIViewController *SGRHomeSettingsPage(void);
 void SGRHomeProfilePhotoPreferenceChanged(void);
 
 // Whether the view sits in the shelf HomeTopPicks.x draws large (a card of it, or its cell).

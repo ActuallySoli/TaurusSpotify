@@ -2,12 +2,14 @@
 #import "Core/SGCore.h"
 #import "Settings/SGPageStyle.h"
 #import "About.h"
+#import "Shared/AutoMix/AutoMix.h"
 
 static BOOL isSetting(NSString *key) {
     if (![key hasPrefix:@"spotifyglass."]) return NO;
     for (NSString *local in @[@"spotifyglass.adblock.counts", @"spotifyglass.privacy.counts", @"spotifyglass.update.",
                               @"spotifyglass.signing.", @"spotifyglass.onboarding.", @"spotifyglass.navbar.stock",
-                              @"spotifyglass.redesign.navbar.stock", @"spotifyglass.flags.defaultOverridesSeeded"]) {
+                              @"spotifyglass.redesign.navbar.stock", @"spotifyglass.flags.defaultOverridesSeeded",
+                              @"spotifyglass.automix.savedPreferences"]) {
         if ([key hasPrefix:local]) return NO;
     }
     return YES;
@@ -52,6 +54,7 @@ static Class kindOf(id value) {
 }
 
 static void importSettings(NSDictionary *settings) {
+    SGAutoMixRestorePreferences();
     NSUserDefaults *store = NSUserDefaults.standardUserDefaults;
     NSDictionary *stored = storedDefaults();
     for (NSString *key in stored) {

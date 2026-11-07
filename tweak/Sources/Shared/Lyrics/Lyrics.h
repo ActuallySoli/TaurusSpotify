@@ -6,15 +6,31 @@ SGModRow *SGLockScreenLyricsRow(void);
 SGModRow *SGLyricsTranslationLanguageRow(void);
 SGModRow *SGLyricsWordTimingRow(void);
 SGModRow *SGLyricsRomanisedRow(void);
+SGModRow *SGLyricsPronunciationScriptRow(void);
+SGModRow *SGRLyricsFuriganaRow(void);
 SGModRow *SGLyricsDelayRow(void);
+SGModSection *SGLyricsOfflineCacheSection(void);
 
 #define SGKeyLyricsSimulateWords @"spotifyglass.lyricsSimulateWords"
 #define SGKeyLyricsDelay @"spotifyglass.lyricsDelay"
 // Shows a line in another alphabet again in Latin letters (Romanise.m), under the lyrics.
 #define SGKeyLyricsRomanised @"spotifyglass.lyricsRomanised"
+#define SGKeyLyricsPronunciationScript @"spotifyglass.lyricsPronunciationScript"
+#define SGRKeyLyricsFurigana @"spotifyglass.redesign.lyricsFurigana"
+#define SGKeyLyricsCache @"spotifyglass.lyricscache"
 extern NSNotificationName const SGLyricsRomanisedDidChangeNotification;
+extern NSNotificationName const SGLyricsFuriganaDidChangeNotification;
 NSString *SGLyricsRomanised(NSString *text, BOOL japanese);   // nil where there is nothing to read
 BOOL SGLyricsLooksJapanese(NSArray<SGKaraokeLine *> *lines);
+
+@interface SGLyricsFuriganaSpan : NSObject
+@property (nonatomic) NSRange range;
+@property (nonatomic, copy) NSString *reading;
+@end
+
+NSArray<SGLyricsFuriganaSpan *> *SGLyricsFuriganaSpans(NSString *text);
+NSUInteger SGLyricsCachedTrackCount(void);
+void SGLyricsClearCache(void);
 
 // The Lyrics page's "Use these sources anyway", for an EeveeSpotify whose settings read wrong.
 #define SGKeyLyricsBesideEevee @"spotifyglass.lyrics.besideEevee"

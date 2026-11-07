@@ -20,8 +20,12 @@
 // backgroundViewModel:didChangeColor:playerState:] (objc-methods.txt:57949).
 #import "Core/SGCore.h"
 #import "Settings/SGModPage.h"
+#import "Settings/SGPageStyle.h"
 #import "Redesigned/Kit/SGRKit.h"
 #import "Player.h"
+#import "SGRSpectrum.h"
+#import "Shaders/SGRShaders.h"
+#import <PhotosUI/PhotosUI.h>
 
 // Past the plane's edges: above for the pull that dismisses the player, below for the bounce at the end
 // of the cards.
@@ -43,9 +47,112 @@ SGRArtworkField *SGRPlayerField(void) {
     return sg_field;
 }
 
+static NSString *pictureDirectory(void) {
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    return [docs stringByAppendingPathComponent:@"spoti.pw/Background"];
+}
+
+static NSString *picturePathFor(NSString *photoID) {
+    if (!photoID.length) return nil;
+    return [pictureDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"player-%@.jpg", photoID]];
+}
+
+UIImage *SGRPlayerPictureImage(void) {
+    static NSString *cachedID;
+    static UIImage *cachedImage;
+    NSString *photoID = [NSUserDefaults.standardUserDefaults stringForKey:SGRKeyPlayerPicturePhoto];
+    if (!photoID.length) {
+        cachedID = nil;
+        cachedImage = nil;
+        return nil;
+    }
+    if ([photoID isEqualToString:cachedID] && cachedImage) return cachedImage;
+    NSString *path = picturePathFor(photoID);
+    NSData *data = path ? [NSData dataWithContentsOfFile:path] : nil;
+    UIImage *image = data ? [UIImage imageWithData:data] : nil;
+    cachedID = [photoID copy];
+    cachedImage = image;
+    return image;
+}
+
+@interface SGRPlayerPicturePicker : NSObject <PHPickerViewControllerDelegate>
+@property (nonatomic, copy) void (^picked)(void);
+@end
+
+static SGRPlayerPicturePicker *sg_picturePicker;
+
+@implementation SGRPlayerPicturePicker
+
+- (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPickerResult *> *)results {
+    [picker dismissViewControllerAnimated:YES completion:nil];
+    NSItemProvider *provider = results.firstObject.itemProvider;
+    if (!provider || ![provider canLoadObjectOfClass:UIImage.class]) {
+        sg_picturePicker = nil;
+        return;
+    }
+    void (^done)(void) = self.picked;
+    [provider loadObjectOfClass:UIImage.class completionHandler:^(__kindof id<NSItemProviderReading> object, NSError *error) {
+        UIImage *image = [object isKindOfClass:UIImage.class] ? (UIImage *)object : nil;
+        if (!image) {
+            dispatch_async(dispatch_get_main_queue(), ^{ sg_picturePicker = nil; });
+            return;
+        }
+        UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+        format.scale = 1;
+        CGFloat maxSide = 1600;
+        CGSize size = image.size;
+        if (size.width > maxSide || size.height > maxSide) {
+            CGFloat ratio = MIN(maxSide / MAX(1, size.width), maxSide / MAX(1, size.height));
+            size = CGSizeMake(round(size.width * ratio), round(size.height * ratio));
+        }
+        UIImage *normalized = [[[UIGraphicsImageRenderer alloc] initWithSize:size format:format]
+            imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+                [image drawInRect:CGRectMake(0, 0, size.width, size.height)];
+            }];
+        NSData *jpeg = UIImageJPEGRepresentation(normalized ?: image, 0.88);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            sg_picturePicker = nil;
+            if (!jpeg.length) return;
+            NSFileManager *fm = NSFileManager.defaultManager;
+            NSString *dir = pictureDirectory();
+            [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+            NSString *oldID = [NSUserDefaults.standardUserDefaults stringForKey:SGRKeyPlayerPicturePhoto];
+            if (oldID.length) [fm removeItemAtPath:picturePathFor(oldID) error:nil];
+            NSString *newID = [NSUUID.UUID.UUIDString substringToIndex:8].lowercaseString;
+            if ([jpeg writeToFile:picturePathFor(newID) atomically:YES]) {
+                [NSUserDefaults.standardUserDefaults setObject:newID forKey:SGRKeyPlayerPicturePhoto];
+                SGSetInt(SGRKeyPlayerBackground, SGRPlayerBackgroundPicture);
+                SGSetEnabled(SGRKeyPlayerBlackBackground, NO);
+                SGRPlayerApplyBackgroundToField(sg_field, SGRPlayerBackground());
+                SGRPlayerMotionLyricsChanged();
+                SGRPlayerVisualiserUpdate();
+                SGRPlayerShaderUpdate();
+                if (done) done();
+            }
+        });
+    }];
+}
+
+@end
+
+void SGRPlayerPickPicture(UIViewController *from, void (^picked)(void)) {
+    PHPickerConfiguration *config = [[PHPickerConfiguration alloc] init];
+    config.selectionLimit = 1;
+    config.filter = [PHPickerFilter imagesFilter];
+    PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:config];
+    picker.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    sg_picturePicker = [SGRPlayerPicturePicker new];
+    sg_picturePicker.picked = picked;
+    picker.delegate = sg_picturePicker;
+    [from ?: SGTopController() presentViewController:picker animated:YES completion:nil];
+}
+
 SGRPlayerBackgroundKind SGRPlayerBackground(void) {
+    if (SGFlag(SGRKeyPlayerBlackBackground, NO) && [NSUserDefaults.standardUserDefaults objectForKey:SGRKeyPlayerBackground] == nil) {
+        return SGRPlayerBackgroundBlack;
+    }
     NSInteger kind = SGInt(SGRKeyPlayerBackground, SGEnabled(SGRKeyPlayerMotion) ? SGRPlayerBackgroundColours : SGRPlayerBackgroundStill);
-    return kind >= SGRPlayerBackgroundStill && kind <= SGRPlayerBackgroundFill ? kind : SGRPlayerBackgroundColours;
+    return kind >= SGRPlayerBackgroundStill && kind <= SGRPlayerBackgroundPicture ? kind : SGRPlayerBackgroundColours;
 }
 
 SGRPlayerBackgroundKind SGRPlayerAnimatedFallback(void) {
@@ -55,21 +162,27 @@ SGRPlayerBackgroundKind SGRPlayerAnimatedFallback(void) {
         SGRPlayerBackgroundFluid,
         SGRPlayerBackgroundVisualiser,
         SGRPlayerBackgroundFill,
+        SGRPlayerBackgroundShader,
+        SGRPlayerBackgroundBlack,
+        SGRPlayerBackgroundPicture,
     };
-    NSInteger index = SGInt(SGRKeyPlayerAnimatedFallback, (NSInteger)(sizeof choices / sizeof *choices) - 1);
-    if (index < 0 || index >= (NSInteger)(sizeof choices / sizeof *choices)) index = (NSInteger)(sizeof choices / sizeof *choices) - 1;
+    NSInteger index = SGInt(SGRKeyPlayerAnimatedFallback, 4);
+    if (index < 0 || index >= (NSInteger)(sizeof choices / sizeof *choices)) index = 4;
     return choices[index];
 }
 
 NSArray<NSString *> *SGRPlayerBackgroundNames(void) {
-    return @[@"Still", @"Colors", @"Fluid", @"Animated", @"Visualiser", @"Fill"];
+    return @[@"Still", @"Colors", @"Fluid", @"Animated", @"Visualiser", @"Fill", @"Shader", @"Black", @"Picture"];
 }
 
 void SGRPlayerApplyBackgroundToField(SGRArtworkField *field, SGRPlayerBackgroundKind kind) {
     if (!field) return;
     if (kind == SGRPlayerBackgroundAnimated) kind = SGRPlayerAnimatedFallback();
     BOOL fluid = kind == SGRPlayerBackgroundFluid
-        || kind == SGRPlayerBackgroundVisualiser;
+        || kind == SGRPlayerBackgroundVisualiser
+        || kind == SGRPlayerBackgroundShader;
+    field.black = kind == SGRPlayerBackgroundBlack;
+    field.picture = kind == SGRPlayerBackgroundPicture ? SGRPlayerPictureImage() : nil;
     field.flows = kind == SGRPlayerBackgroundColours;
     field.fluid = fluid;
     field.fills = kind == SGRPlayerBackgroundFill;
@@ -79,10 +192,11 @@ void SGRPlayerApplyBackgroundToField(SGRArtworkField *field, SGRPlayerBackground
 }
 
 // A paused song holds the colors still, the way it rests the cover (PlayerArtwork.x), and so does what lies over
-// the field: an animated artwork's clip, which covers it (PlayerMotion.x), or the Visualizer's hills, which are
-// the one thing moving.
+// the field: an animated artwork's clip, which covers it (PlayerMotion.x), or the Visualizer's hills or the
+// Shader's field, which are the one thing moving.
 static BOOL fieldHeld(void) {
-    return SGPlayerState().isPaused || SGRPlayerMotionShowing() || SGRPlayerVisualiserShowing();
+    return SGPlayerState().isPaused || SGRPlayerMotionShowing() || SGRPlayerVisualiserShowing()
+        || (SGRPlayerShaderShowing() && SGRShaderReady());
 }
 
 void SGRPlayerHoldField(void) {
@@ -158,6 +272,7 @@ static SGRArtworkField *fieldIn(UIView *plane) {
     if (!CGRectEqualToRect(field.frame, plane.bounds)) field.frame = plane.bounds;
     SGRPlayerMotionFieldLaidOut();
     SGRPlayerVisualiserUpdate();
+    SGRPlayerShaderUpdate();
 }
 
 - (void)backgroundViewModel:(id)model didChangeColor:(id)color playerState:(id)state {
@@ -261,9 +376,16 @@ static SGRPlayerCoverWatcher *sg_coverWatcher;
                             @"world_cup_easter_egg"]) {
         flags[[@"ios-feature-nowplaying." stringByAppendingString:egg]] = @NO;
     }
+    if (SGFlag(SGRKeyPlayerLyricLine, NO)) {
+        flags[@"ios-nowplaying-contentlayers-impl.lyrics_under_cover_art_enabled"] = @YES;
+    }
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad && SGFlag(SGRKeyPlayerFullScreen, NO)) {
+        flags[@"npv-side-panel.ipad_enabled"] = @NO;
+    }
     SGRedesignForceFlags(@"player", flags);
     if (!SGRedesignedUI()) return;
     %init;
+    SGRSpectrumInstall();   // the audio-reactive backgrounds' spectrum; startup only, so before anything plays
     sg_coverWatcher = [SGRPlayerCoverWatcher new];
     SGAddPlayerStateObserver(sg_coverWatcher);
     [NSNotificationCenter.defaultCenter addObserverForName:SGRNowPlayingArtworkDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *note) {

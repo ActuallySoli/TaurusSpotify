@@ -3,6 +3,7 @@
 #import "Headers/SPTEncoreIconView.h"
 #import "Shared/Navigation/Links.h"
 #import "Shared/Navigation/TabIcons.h"
+#import "Settings/SGPageStyle.h"
 #import <objc/message.h>
 
 static const CGFloat kIconSize = 24;
@@ -21,14 +22,6 @@ static UIFont *sg_tabFont;
 static NSMutableArray<NSString *> *sg_stockOrder;
 
 static UIColor *itemColor(void) { return [UIColor colorWithWhite:0xB3 / 255.0 alpha:1]; }
-
-void SGRNavbarSetProfilePhotoVisible(UIView *face) {
-    if (!face) return;
-    BOOL visible = SGFlag(SGRKeyNavbarProfilePhoto, YES);
-    face.alpha = visible ? 1 : 0;
-    face.userInteractionEnabled = visible;
-    face.accessibilityElementsHidden = !visible;
-}
 
 #pragma mark - the mod's own items
 
@@ -64,6 +57,7 @@ static UIView *iconView(NSDictionary *entry) {
 - (void)applyEntry:(NSDictionary *)entry {
     self.uri = entry[SGRNavbarURI];
     _title.text = entry[SGRNavbarTitle];
+    self.accessibilityLabel = _title.text;
     NSString *name = entry[SGRNavbarIcon] ?: @"star";
     NSString *set = [entry[SGRNavbarIconSet] isEqual:SGTabIconSetSymbols] ? @"symbols" : @"encore";
     NSString *identity = [NSString stringWithFormat:@"%@:%@", set, name];
@@ -99,14 +93,25 @@ static UIView *iconView(NSDictionary *entry) {
 
 - (void)open {
     NSURL *url = SGRNavbarTabURL(self.uri);
+    if (!url) {
+        SGLog(@"navbar: open \"%@\" -> invalid Spotify URI, ignored", self.uri ?: @"");
+        return;
+    }
     NSString *via = nil;
     SGLinkRoute route = SGSpotifyURIRoute(url, &via);
     SGLog(@"navbar: open %@ -> %@", url.absoluteString ?: self.uri,
-          route == SGLinkRouteOpens ? via : route == SGLinkRouteNone ? @"no handler" : @"unknown");
-    if (!SGOpenSpotifyURI(url)) {
+          route == SGLinkRouteOpens ? via : route == SGLinkRouteNone ? @"no handler" : @"registry unavailable, trying dispatcher");
+    if (route == SGLinkRouteNone || !SGOpenSpotifyURI(url)) {
         SGLog(@"navbar: cannot open %@, dispatcher %@", self.uri, SGLinkDispatcher());
+        UIViewController *top = SGTopController();
+        if (!top || top.presentedViewController) return;
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Can't open that tab"
+            message:@"Spotify could not open this destination. Edit its link in Mod Settings → Navbar."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+        [top presentViewController:alert animated:YES completion:nil];
     } else {
-        // The page opened in process; light the tab up as the one the user is in now.
+        // A known route was submitted; keep this tab selected until a stock tab is tapped.
         SGRTabBarMarkCustomSelected(self);
     }
 }

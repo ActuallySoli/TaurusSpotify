@@ -51,6 +51,21 @@ NSInteger SGRLyricsAnimationIndex(void);
 void SGRSetLyricsAnimationIndex(NSInteger index, id changer);
 SGRLyricsAnimation SGRLyricsAnimationNow(void);
 
+// The sung-word effect: Classic keeps the original text; the others add glyph-masked compositor layers.
+#define SGRKeyLyricsShader @"spotifyglass.redesign.lyricsShader"
+NSArray<NSString *> *SGRLyricsShaderNames(void);
+NSInteger SGRLyricsShaderIndex(void);
+void SGRSetLyricsShaderIndex(NSInteger index, id changer);
+#define SGRKeyLyricsShaderOptions @"spotifyglass.redesign.lyricsShaderOptions"
+typedef struct { CGFloat intensity, speed; } SGRLyricsShaderOptions;
+SGRLyricsShaderOptions SGRLyricsShaderOptionsNow(void);
+void SGRSetLyricsShaderOptions(SGRLyricsShaderOptions options, id changer);
+NSData *SGRLyricsShaderProfileData(NSError **error);
+BOOL SGRImportLyricsShaderProfile(NSData *data, id changer, NSError **error);
+// The chosen shader's colors: the lit word, the dim word (drawn at the dim alpha), the glow behind the
+// letters, and how much to scale that glow. Classic answers white and 1.
+void SGRLyricsShaderColors(UIColor * __strong *lit, UIColor * __strong *dim, UIColor * __strong *glow, CGFloat *glowScale);
+
 // The presets, by name, Apple Music's first.
 NSArray<NSString *> *SGRLyricsLookPresetNames(void);
 SGRLyricsLook SGRLyricsLookPreset(NSUInteger index);

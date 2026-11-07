@@ -92,7 +92,9 @@ void SGRSetNavbarRemovedStock(NSArray<NSString *> *stock) {
 }
 
 NSURL *SGRNavbarTabURL(NSString *uri) {
+    if (![uri isKindOfClass:NSString.class]) return nil;
     NSURL *url = SGSpotifyURIFromText(uri);
-    if ([url.absoluteString isEqualToString:@"spotify:collection:playlists"]) return [NSURL URLWithString:@"spotify:playlists"];
+    // The shared parser also accepts relative URLs and other schemes; a tab needs a Spotify destination.
+    if (![url.scheme.lowercaseString isEqualToString:@"spotify"] || url.absoluteString.length <= @"spotify:".length) return nil;
     return url;
 }

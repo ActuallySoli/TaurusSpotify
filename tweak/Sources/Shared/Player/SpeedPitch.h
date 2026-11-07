@@ -19,8 +19,13 @@ void SGSetPlayerPitch(float semitones);
 // Whether the output could be reached to change its pitch.
 BOOL SGPlayerPitchAvailable(void);
 #define SGKeyPitchFollowsSpeed @"spotifyglass.speedPitch.follows"
+#define SGKeySpeedPitchSongs @"spotifyglass.speedPitch.songs"
 BOOL SGPlayerPitchFollowsSpeed(void);
 void SGSetPlayerPitchFollowsSpeed(BOOL follows);
+
+BOOL SGPlayerKeepForCurrentSong(void);
+void SGSetPlayerKeepForCurrentSong(BOOL keep);
+void SGPlayerSaveSongSpeedPitchIfKept(void);
 
 // Current downstream processing delay, in seconds. Atomic unit ownership; safe off-render.
 double SGPlayerAudioLatency(void);

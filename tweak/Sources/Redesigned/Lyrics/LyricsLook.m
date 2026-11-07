@@ -92,6 +92,8 @@ void SGRResetLyricsLook(id changer) {
     [store removeObjectForKey:SGRKeyLyricsLook];
     [store removeObjectForKey:SGRKeyLyricsFont];
     [store removeObjectForKey:SGRKeyLyricsAnimation];
+    [store removeObjectForKey:SGRKeyLyricsShader];
+    [store removeObjectForKey:SGRKeyLyricsShaderOptions];
     [NSNotificationCenter.defaultCenter postNotificationName:SGRLyricsLookDidChangeNotification object:changer];
 }
 
@@ -107,6 +109,88 @@ void SGRSetLyricsAnimationIndex(NSInteger index, id changer) {
 
 SGRLyricsAnimation SGRLyricsAnimationNow(void) {
     return animations[SGRLyricsAnimationIndex()];
+}
+
+#pragma mark - the shader
+
+NSArray<NSString *> *SGRLyricsShaderNames(void) {
+    return @[@"Classic", @"Neon", @"Inferno", @"Hologram", @"Chrome", @"Blueprint"];
+}
+
+// The lit word, the dim word, the glow behind the letters, and the glow's scale; Classic is white.
+typedef struct { CGFloat lit[3], dim[3], glow[3], scale; } SGRLyricsShaderStyle;
+
+static const SGRLyricsShaderStyle shaders[] = {
+    {{1, 1, 1},          {1, 1, 1},          {1, 1, 1},          1},     // Classic
+    {{1.0, 0.31, 0.85},  {1.0, 0.31, 0.85},  {0.69, 0.29, 1.0},  1.8},   // Neon
+    {{1.0, 0.71, 0.23},  {1.0, 0.35, 0.17},  {1.0, 0.30, 0.0},   2.0},   // Inferno
+    {{0.62, 0.96, 1.0},  {0.37, 0.84, 1.0},  {0.30, 0.88, 1.0},  1.6},   // Hologram
+    {{0.91, 0.94, 0.98}, {1, 1, 1},          {0.78, 0.85, 0.91}, 1.4},   // Chrome
+    {{0.50, 0.83, 1.0},  {0.50, 0.83, 1.0},  {0.18, 0.48, 1.0},  1.5},   // Blueprint
+};
+
+NSInteger SGRLyricsShaderIndex(void) {
+    NSInteger index = [NSUserDefaults.standardUserDefaults integerForKey:SGRKeyLyricsShader];
+    return index >= 0 && index < (NSInteger)SGRLyricsShaderNames().count ? index : 0;
+}
+
+void SGRSetLyricsShaderIndex(NSInteger index, id changer) {
+    NSInteger safe = index >= 0 && index < (NSInteger)SGRLyricsShaderNames().count ? index : 0;
+    [NSUserDefaults.standardUserDefaults setInteger:safe forKey:SGRKeyLyricsShader];
+    [NSNotificationCenter.defaultCenter postNotificationName:SGRLyricsLookDidChangeNotification object:changer];
+}
+
+SGRLyricsShaderOptions SGRLyricsShaderOptionsNow(void) {
+    NSDictionary *saved = [NSUserDefaults.standardUserDefaults dictionaryForKey:SGRKeyLyricsShaderOptions];
+    return (SGRLyricsShaderOptions){stored(saved, @"intensity", 0.85, 0, 1), stored(saved, @"speed", 1, 0.35, 2)};
+}
+
+void SGRSetLyricsShaderOptions(SGRLyricsShaderOptions options, id changer) {
+    [NSUserDefaults.standardUserDefaults setObject:@{@"intensity": @(held(options.intensity, 0, 1)), @"speed": @(held(options.speed, 0.35, 2))} forKey:SGRKeyLyricsShaderOptions];
+    [NSNotificationCenter.defaultCenter postNotificationName:SGRLyricsLookDidChangeNotification object:changer];
+}
+
+NSData *SGRLyricsShaderProfileData(NSError **error) {
+    SGRLyricsShaderOptions options = SGRLyricsShaderOptionsNow();
+    return [NSJSONSerialization dataWithJSONObject:@{@"format": @"spoti.pw.lyrics-effect", @"version": @1,
+        @"effect": SGRLyricsShaderNames()[(NSUInteger)SGRLyricsShaderIndex()], @"intensity": @(options.intensity), @"speed": @(options.speed)}
+        options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:error];
+}
+
+BOOL SGRImportLyricsShaderProfile(NSData *data, id changer, NSError **error) {
+    id decoded = data.length <= 16 * 1024 && data.length ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    NSDictionary *profile = [decoded isKindOfClass:NSDictionary.class] ? decoded : nil;
+    NSSet *keys = [NSSet setWithArray:profile.allKeys ?: @[]];
+    NSSet *allowed = [NSSet setWithArray:@[@"format", @"version", @"effect", @"intensity", @"speed"]];
+    NSNumber *version = profile[@"version"], *intensity = profile[@"intensity"], *speed = profile[@"speed"];
+    NSInteger index = [profile[@"effect"] isKindOfClass:NSString.class] ? (NSInteger)[SGRLyricsShaderNames() indexOfObject:profile[@"effect"]] : -1;
+    BOOL numbers = [version isKindOfClass:NSNumber.class] && [intensity isKindOfClass:NSNumber.class] && [speed isKindOfClass:NSNumber.class];
+    if (numbers) numbers = CFGetTypeID((__bridge CFTypeRef)version) != CFBooleanGetTypeID()
+        && CFGetTypeID((__bridge CFTypeRef)intensity) != CFBooleanGetTypeID() && CFGetTypeID((__bridge CFTypeRef)speed) != CFBooleanGetTypeID();
+    BOOL valid = [keys isEqual:allowed] && [profile[@"format"] isEqual:@"spoti.pw.lyrics-effect"] && numbers
+        && version.doubleValue == 1 && index >= 0 && index < (NSInteger)SGRLyricsShaderNames().count
+        && isfinite(intensity.doubleValue) && intensity.doubleValue >= 0 && intensity.doubleValue <= 1
+        && isfinite(speed.doubleValue) && speed.doubleValue >= 0.35 && speed.doubleValue <= 2;
+    if (!valid) {
+        if (error) *error = [NSError errorWithDomain:@"spoti.pw.lyrics-effect" code:1 userInfo:@{NSLocalizedDescriptionKey: @"Choose a spoti.pw lyrics-effect JSON profile with an included effect, intensity from 0 to 1 and speed from 0.35 to 2. Your current style was kept."}];
+        return NO;
+    }
+    [NSUserDefaults.standardUserDefaults setInteger:index forKey:SGRKeyLyricsShader];
+    [NSUserDefaults.standardUserDefaults setObject:@{@"intensity": intensity, @"speed": speed} forKey:SGRKeyLyricsShaderOptions];
+    [NSNotificationCenter.defaultCenter postNotificationName:SGRLyricsLookDidChangeNotification object:changer];
+    return YES;
+}
+
+static UIColor *shade(const CGFloat rgb[3]) {
+    return [UIColor colorWithRed:rgb[0] green:rgb[1] blue:rgb[2] alpha:1];
+}
+
+void SGRLyricsShaderColors(UIColor * __strong *lit, UIColor * __strong *dim, UIColor * __strong *glow, CGFloat *glowScale) {
+    SGRLyricsShaderStyle style = shaders[SGRLyricsShaderIndex()];
+    if (lit) *lit = shade(style.lit);
+    if (dim) *dim = shade(style.dim);
+    if (glow) *glow = shade(style.glow);
+    if (glowScale) *glowScale = style.scale;
 }
 
 #pragma mark - the font

@@ -466,6 +466,16 @@ static void showProgress(UITableViewCell *cell, SGModRow *row, BOOL animated) {
     return self;
 }
 
+- (NSArray<SGModSection *> *)sections {
+    return _sections;
+}
+
+- (void)setSections:(NSArray<SGModSection *> *)sections {
+    _sections = [sections copy] ?: @[];
+    _shown = [self rowsToShow];
+    if (self.isViewLoaded) [self.tableView reloadData];
+}
+
 - (NSArray<NSArray<SGModRow *> *> *)rowsToShow {
     NSMutableArray<NSArray<SGModRow *> *> *shown = [NSMutableArray arrayWithCapacity:_sections.count];
     for (SGModSection *s in _sections) {
@@ -676,11 +686,11 @@ static void showProgress(UITableViewCell *cell, SGModRow *row, BOOL animated) {
     } else if (row.action) {
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     }
-    if (waiting) {
-        cell.userInteractionEnabled = NO;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        cell.alpha = 0.4;
-    }
+    // Reset every time: cells are reused, and a row that was waiting must not stay disabled after
+    // its switch comes on.
+    cell.userInteractionEnabled = !waiting;
+    cell.alpha = waiting ? 0.4 : 1.0;
+    if (waiting) cell.selectionStyle = UITableViewCellSelectionStyleNone;
     return cell;
 }
 

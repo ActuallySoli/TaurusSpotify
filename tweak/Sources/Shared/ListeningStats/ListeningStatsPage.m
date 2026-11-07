@@ -7,6 +7,7 @@
 #import "Settings/SGPageStyle.h"
 #import "ListeningStats.h"
 #import "SGPlayLog.h"
+#import "Recap.h"
 
 static const int64_t kDay = 86400;
 
@@ -42,8 +43,12 @@ static SGModSection *topSection(NSString *title, NSArray<SGStatEntry *> *entries
 static UIViewController *periodPage(NSString *title, int64_t since) {
     SGStats *stats = SGStatsSince(SGListeningLog().plays, since, 25);
     NSString *time = duration(stats.ms), *plays = playsText(stats.plays);
+    SGModRow *playRecap = SGWithSymbol(SGActionRow(@"Play as recap", @"Watch this period as a shareable story", ^{
+        SGPolarPresentRecapForRange([NSString stringWithFormat:@"%@ Recap", title], title, since, 0);
+    }), @"play.rectangle.fill");
     return [[SGModPage alloc] initWithTitle:title intro:nil sections:@[
         SGSection(nil, @[
+            playRecap,
             SGStatRow(@"Listening time", ^NSString *{ return time; }),
             SGStatRow(@"Plays", ^NSString *{ return plays; }),
         ]),
@@ -151,10 +156,17 @@ UIViewController *SGListeningStatsPage(void) {
                                                     ^NSString *{ return sg_importing ? @"Importing…" : nil; }, nil), @"square.and.arrow.down");
     SGModRow *erase = SGWithSymbol(SGActionRow(@"Erase listening history", nil, nil), @"trash");
     erase.color = SGRed();
+    SGModRow *playAsRecap = SGWithSymbol(SGActionRow(@"Play as recap", @"Watch your listening history as a story", ^{
+        SGPolarPresentRecapForRange(@"Monthly Recap", @"Past 30 days", (int64_t)time(NULL) - 30 * kDay, 0);
+    }), @"play.rectangle.fill");
+    SGModRow *allRecaps = SGWithSymbol(SGPageRow(@"All recaps", ^UIViewController *{ return SGAllRecapsPage(); }), @"sparkles.rectangle.stack");
+    SGModRow *announceRecaps = SGSwitchRow(@"Announce recaps", @"Show when a new weekly, monthly or yearly recap is ready", SGKeyRecapAnnounce);
     SGModPage *page = [[SGModPage alloc] initWithTitle:@"Listening stats" intro:nil sections:@[
         SGNotedSection(nil, @[SGSwitchRow(@"Record plays", nil, SGKeyListeningStats)],
                        @"A play counts once it has run 30 seconds, or half of a shorter track. Everything stays on this phone."),
         SGSection(nil, periods),
+        SGNotedSection(@"Recaps", @[playAsRecap, allRecaps, announceRecaps],
+                       @"Weekly, monthly and yearly recaps play your listening as a story you can share."),
         SGNotedSection(nil, @[
             SGStatRow(@"Plays", ^NSString *{ return [NSString stringWithFormat:@"%lu", (unsigned long)SGListeningLog().plays.count]; }),
             import,

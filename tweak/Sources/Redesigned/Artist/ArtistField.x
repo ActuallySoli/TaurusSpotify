@@ -101,6 +101,7 @@ static void hideStrip(UIView *strip) {
 %hook _TtCOOOE16PodcastUI_ECMKitO19LegacyUI_ECMCoreKit10Components18TabsSectionHeading2UI7Private9TabButton
 - (void)layoutSubviews {
     %orig;
+    if (!SGHidden(SGRKeyArtistHideTabs)) return;
     for (UIView *v = ((UIView *)self).superview; v; v = v.superview) {
         if (![v.accessibilityIdentifier isEqualToString:@"Components.UI.TabsSectionHeading"]) continue;
         if (SGRArtistPageOf(v)) hideStrip(v);

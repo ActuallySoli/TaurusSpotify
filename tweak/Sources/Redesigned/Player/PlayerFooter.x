@@ -46,7 +46,7 @@ static const CGFloat kVolumeMargin = 24;
 // And the controls go up this much over it, so the gaps above and below the volume row match.
 static const CGFloat kVolumeLift = 10;
 
-static char kConnectKey, kShareKey, kTrimmerKey, kSharedByKey, kQueueKey, kLyricsGlyphKey, kReachKey;
+static char kConnectKey, kShareKey, kTrimmerKey, kSharedByKey, kQueueKey, kQueueGlyphKey, kLyricsGlyphKey, kReachKey;
 static __weak SGRGlyphButton *sg_lyricsGlyph;
 static __weak UIView *sg_footerHost;
 static BOOL sg_playerIsVisible;
@@ -333,9 +333,30 @@ static void lowerRow(UIView *row) {
     SGForEachView(connect, ^(UIView *view) {
         if ([view isKindOfClass:UILabel.class] || [NSStringFromClass(view.class) containsString:@"MarqueeLabel"]) SGRPlayerVanish(view);
     });
+    if (SGRPlayerMusicIconsOn() && [glyph isKindOfClass:UIImageView.class]) {
+        UIImageView *imgView = (UIImageView *)glyph;
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightSemibold];
+        UIImage *airplay = [UIImage systemImageNamed:@"airplayaudio" withConfiguration:cfg];
+        if (airplay && imgView.image != airplay) imgView.image = airplay;
+    }
     CGFloat connectFrom = glyph ? moveTo(arrangedAround(connect, host), glyph, CGPointMake(CGRectGetMidX(glyph.bounds), CGRectGetMidY(glyph.bounds)), host, round(width * kMiddle)) : -1;
 
     UIView *queue = SGRFindByIdentifier(host, @"QueueButtonNowPlaying", &kQueueKey);
+    if (SGRPlayerMusicIconsOn() && queue) {
+        SGRGlyphView *queueGlyph = objc_getAssociatedObject(queue, &kQueueGlyphKey);
+        if (!queueGlyph) {
+            queueGlyph = [[SGRGlyphView alloc] initWithSymbol:@"list.bullet" pointSize:19 weight:UIImageSymbolWeightSemibold];
+            queueGlyph.tintColor = SGRSecondary();
+            objc_setAssociatedObject(queue, &kQueueGlyphKey, queueGlyph, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        SGForEachView(queue, ^(UIView *view) {
+            if (view != queueGlyph && ([view isKindOfClass:UIImageView.class] || [NSStringFromClass(view.class) containsString:@"IconView"])) {
+                SGRPlayerVanish(view);
+            }
+        });
+        if (queueGlyph.superview != queue) [queue addSubview:queueGlyph];
+        queueGlyph.center = CGPointMake(CGRectGetMidX(queue.bounds), CGRectGetMidY(queue.bounds));
+    }
     CGFloat queueFrom = moveTo(arrangedAround(queue, host), queue, CGPointMake(CGRectGetMidX(queue.bounds), CGRectGetMidY(queue.bounds)), host, round(width * (rtl ? kLeading : kTrailing)));
 
     lowerRow(host);
@@ -366,6 +387,55 @@ static void lowerRow(UIView *row) {
     %orig;
     sg_playerIsVisible = NO;
     updatePlayerIdleTimer();
+}
+%end
+
+static BOOL glassSheetsOn(void) {
+    static BOOL on;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ on = SGFlag(SGRKeyGlassSheets, NO); });
+    return on;
+}
+
+static void applyGlassSheet(UIViewController *controller) {
+    if (!glassSheetsOn()) return;
+    UISheetPresentationController *sheet = controller.sheetPresentationController ?: controller.navigationController.sheetPresentationController;
+    SEL nonLargeSel = NSSelectorFromString(@"_nonLargeBackground");
+    SEL setLargeSel = NSSelectorFromString(@"_setLargeBackground:");
+    if (sheet && [sheet respondsToSelector:nonLargeSel] && [sheet respondsToSelector:setLargeSel]) {
+        id glass = ((id(*)(id, SEL))objc_msgSend)(sheet, nonLargeSel);
+        if (glass) ((void(*)(id, SEL, id))objc_msgSend)(sheet, setLargeSel, glass);
+    }
+    UIView *root = controller.viewIfLoaded;
+    if (!root) return;
+    root.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    root.backgroundColor = UIColor.clearColor;
+    for (UIView *sub in root.subviews) {
+        if (sub.backgroundColor && ![sub.backgroundColor isEqual:UIColor.clearColor]) {
+            sub.backgroundColor = UIColor.clearColor;
+        }
+    }
+}
+
+%hook _TtC14Queue_ViewImpl19QueueViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    applyGlassSheet((UIViewController *)self);
+}
+- (void)viewWillLayoutSubviews {
+    %orig;
+    applyGlassSheet((UIViewController *)self);
+}
+%end
+
+%hook _TtC26Connect_DevicePickerUIImpl26DevicePickerViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    applyGlassSheet((UIViewController *)self);
+}
+- (void)viewWillLayoutSubviews {
+    %orig;
+    applyGlassSheet((UIViewController *)self);
 }
 %end
 

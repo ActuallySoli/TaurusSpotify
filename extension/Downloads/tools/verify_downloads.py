@@ -9,7 +9,8 @@ from zipfile import BadZipFile, ZipFile
 
 from patch_native_restrictions import UUID, SETTER, CAVE, ORIGINAL, branch, layout, trampoline
 from patch_key_request_mode import CALL_SITE, WINDOW, ORIGINAL as KEY_ORIGINAL
-from patch_native_trace import POINTS, trampoline as trace_trampoline
+from patch_native_trace import POINTS, points_for, trampoline as trace_trampoline
+from native_profiles import profile_for_uuid
 
 COMPANION = "SpotifyAudioProbe.dylib"
 
@@ -34,8 +35,7 @@ def load_paths(binary):
 
 def verify_native(binary):
     _, _, segments, uuid = layout(binary)
-    if uuid != UUID:
-        raise ValueError("Downloads executable UUID does not match the verified Spotify build")
+    profile = profile_for_uuid(uuid)
 
     def check(address, expected, label):
         for name, vm, _, fileoff, filesize, _ in segments:
@@ -46,15 +46,15 @@ def verify_native(binary):
                 break
         raise ValueError("Missing or changed Downloads patch: " + label)
 
-    check(SETTER, struct.pack("<I", branch(SETTER, CAVE)) + ORIGINAL[4:], "offline restrictions entry")
-    check(CAVE, trampoline(), "offline restrictions trampoline")
-    check(WINDOW, KEY_ORIGINAL[:CALL_SITE - WINDOW], "key request setup")
-    check(CALL_SITE + 4, KEY_ORIGINAL[CALL_SITE - WINDOW + 4:], "original key call")
-    for point in POINTS:
+    check(profile.setter, struct.pack("<I", branch(profile.setter, profile.setter_cave)) + profile.setter_bytes[4:], "offline restrictions entry")
+    check(profile.setter_cave, trampoline(profile.setter_cave, profile.setter), "offline restrictions trampoline")
+    check(profile.window, KEY_ORIGINAL[:profile.request - profile.window], "key request setup")
+    check(profile.request + 4, KEY_ORIGINAL[profile.request - profile.window + 4:], "original key call")
+    for point in points_for(profile):
         name, address, cave, expected, _ = point
         entry = struct.pack("<I", branch(address, cave)) + expected[4:]
         check(address, entry, "key " + name.lower() + " entry")
-        check(cave, trace_trampoline(point), "key " + name.lower() + " trampoline")
+        check(cave, trace_trampoline(point, profile), "key " + name.lower() + " trampoline")
     return uuid.hex()
 
 
@@ -68,10 +68,11 @@ def verify(path):
             raise ValueError("IPA must contain exactly one host app")
         base = hosts[0][:-len("Info.plist")]
         host = plistlib.loads(archive.read(hosts[0]))
-        if host.get("CFBundleShortVersionString") != "9.1.90":
-            raise ValueError("Downloads requires the verified Spotify 9.1.90 build")
         binary = archive.read(base + host["CFBundleExecutable"])
         uuid = verify_native(binary)
+        profile = profile_for_uuid(bytes.fromhex(uuid))
+        if host.get("CFBundleShortVersionString") != profile.version:
+            raise ValueError("Downloads Spotify version and executable UUID disagree")
         loads = [p for p in load_paths(binary) if PurePosixPath(p).name == COMPANION]
         if len(loads) != 1:
             raise ValueError("Spotify must load the Downloads companion exactly once")
@@ -81,7 +82,7 @@ def verify(path):
         companion = archive.read(companions[0])
         if companion[:4] != b"\xcf\xfa\xed\xfe" or b"SAPTaurusBridge\0" not in companion:
             raise ValueError("Downloads companion is not the Taurus bridge library")
-        return {"artifact": Path(path).name, "spotify_uuid": uuid,
+        return {"artifact": Path(path).name, "spotify_uuid": uuid, "spotify_version": profile.version,
                 "companion": companions[0], "load_path": loads[0],
                 "offline_restrictions": "verified", "key_mode_zero": "verified",
                 "native_observation": "verified", "verification": "passed"}

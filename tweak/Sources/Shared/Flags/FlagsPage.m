@@ -3,6 +3,9 @@
 #import "Settings/SGPageStyle.h"
 #import "Flags.h"
 
+__attribute__((weak)) const SGFlagDef SGFlagTable[1] = {{NULL, SGFlagUnknown, 0, 0, 0}};
+__attribute__((weak)) const NSUInteger SGFlagCount = 0;
+
 static NSString *flagState(const SGFlagDef *flag, id value) {
     if (value) return [NSString stringWithFormat:@"forced %@", flag->type == SGFlagBool ? ([value boolValue] ? @"on" : @"off") : value];
     switch (flag->type) {
