@@ -1,31 +1,41 @@
 #import "SGRLyricsShaderEffect.h"
-#import <QuartzCore/QuartzCore.h>
+#import "SGRLyricsShaderSource.h"
+#import "Core/SGLog.h"
+#import <MetalKit/MetalKit.h>
+#import <QuartzCore/CAMetalLayer.h>
+#import <simd/simd.h>
 
 static const NSUInteger kMaskLimit = 48, kPixelLimit = 512 * 1024;
-static NSUInteger liveMasks, livePixels;
+static const NSUInteger kSurfaceLimit = 12, kSurfacePixelLimit = 2 * 1024 * 1024;
+static NSUInteger liveMasks, livePixels, liveSurfaces, liveSurfacePixels;
+static id<MTLDevice> device;
+static id<MTLCommandQueue> queue;
+static id<MTLRenderPipelineState> pipeline;
+static dispatch_queue_t renderQueue;
 
-static UIColor *ink(CGFloat r, CGFloat g, CGFloat b) { return [UIColor colorWithRed:r green:g blue:b alpha:1]; }
-
-static NSArray *palette(NSInteger style) {
-    switch (style) {
-        case 1: return @[ink(0.95, 0.1, 0.65), ink(0.5, 0.2, 1), ink(0.2, 0.95, 1), UIColor.whiteColor, ink(1, 0.18, 0.7), ink(0.5, 0.2, 1)];
-        case 2: return @[ink(0.8, 0.08, 0.02), ink(1, 0.24, 0.03), ink(1, 0.9, 0.3), ink(1, 0.98, 0.8), ink(1, 0.3, 0.05), ink(0.9, 0.1, 0.01)];
-        case 3: return @[ink(0.25, 0.8, 1), ink(0.9, 0.35, 1), ink(0.5, 1, 0.9), UIColor.whiteColor, ink(0.7, 0.5, 1), ink(0.25, 0.8, 1)];
-        case 4: return @[ink(0.25, 0.34, 0.45), ink(0.72, 0.83, 0.94), UIColor.whiteColor, ink(0.3, 0.4, 0.55), ink(0.95, 0.98, 1), ink(0.4, 0.5, 0.6)];
-        default: return @[ink(0.15, 0.5, 0.9), ink(0.4, 0.8, 1), ink(0.8, 0.97, 1), ink(0.2, 0.6, 1), ink(0.1, 0.4, 0.8), ink(0.15, 0.5, 0.9)];
-    }
-}
-
-static CABasicAnimation *travel(NSString *path, CGFloat from, CGFloat to, double duration) {
-    CABasicAnimation *animation = [CABasicAnimation animationWithKeyPath:path];
-    animation.fromValue = @(from);
-    animation.toValue = @(to);
-    animation.duration = duration;
-    animation.beginTime = 1;
-    animation.repeatCount = HUGE_VALF;
-    animation.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionLinear];
-    animation.preferredFrameRateRange = CAFrameRateRangeMake(80, 120, 120);
-    return animation;
+static void preparePipeline(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        device = MTLCreateSystemDefaultDevice();
+        if (!device) return;
+        queue = [device newCommandQueue];
+        renderQueue = dispatch_queue_create("spoti.pw.lyrics.shader", DISPATCH_QUEUE_SERIAL);
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSError *error = nil;
+            id<MTLLibrary> library = [device newLibraryWithSource:SGRLyricsShaderSource options:nil error:&error];
+            MTLRenderPipelineDescriptor *descriptor = [MTLRenderPipelineDescriptor new];
+            descriptor.vertexFunction = [library newFunctionWithName:@"lyricsVertex"];
+            descriptor.fragmentFunction = [library newFunctionWithName:@"lyricsFragment"];
+            MTLRenderPipelineColorAttachmentDescriptor *color = descriptor.colorAttachments[0];
+            color.pixelFormat = MTLPixelFormatBGRA8Unorm;
+            color.blendingEnabled = YES;
+            color.sourceRGBBlendFactor = color.sourceAlphaBlendFactor = MTLBlendFactorOne;
+            color.destinationRGBBlendFactor = color.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+            id<MTLRenderPipelineState> built = library ? [device newRenderPipelineStateWithDescriptor:descriptor error:&error] : nil;
+            if (!built) SGLog(@"lyrics shader: %@", error.localizedDescription ?: @"Metal pipeline unavailable");
+            dispatch_async(dispatch_get_main_queue(), ^{ pipeline = built; });
+        });
+    });
 }
 
 static UIImage *glyphMask(UILabel *source, CGFloat scale) {
@@ -47,14 +57,29 @@ static UIImage *glyphMask(UILabel *source, CGFloat scale) {
     format.opaque = NO;
     format.preferredRange = UIGraphicsImageRendererFormatRangeStandard;
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:source.bounds.size format:format];
-    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) { [copy drawTextInRect:copy.bounds]; }];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) { (void)context; [copy drawTextInRect:copy.bounds]; }];
 }
 
+typedef struct { vector_float2 position, uv, field; } SGRLyricsVertex;
+typedef struct { float time, intensity; uint32_t style; float padding; } SGRLyricsUniforms;
+
+@interface SGRLyricsShaderSubmission : NSObject
+@property (atomic) BOOL enabled;
+@end
+@implementation SGRLyricsShaderSubmission
+@end
+
 @implementation SGRLyricsShaderEffect {
-    NSArray<CALayer *> *_clocks;
-    NSUInteger _maskCount, _pixels;
-    CGFloat _speed;
-    BOOL _running, _anchored;
+    __weak UIView *_root;
+    NSArray<UILabel *> *_labels;
+    NSArray<id<MTLTexture>> *_textures;
+    CAMetalLayer *_surface;
+    dispatch_semaphore_t _available;
+    SGRLyricsShaderSubmission *_submission;
+    NSUInteger _maskCount, _pixels, _surfacePixels;
+    CGFloat _speed, _intensity;
+    NSInteger _style;
+    BOOL _failed;
 }
 
 + (NSUInteger)activeMaskCount { return liveMasks; }
@@ -63,119 +88,158 @@ static UIImage *glyphMask(UILabel *source, CGFloat scale) {
 - (instancetype)initWithLabels:(NSArray<UILabel *> *)labels root:(UIView *)root style:(NSInteger)style intensity:(CGFloat)intensity speed:(CGFloat)speed {
     if (!(self = [super init])) return nil;
     if (style < 1 || style > 5 || !labels.count || !isfinite(intensity) || intensity <= 0 || !isfinite(speed)) return nil;
-    CGSize wordSize = root.bounds.size;
-    if (!isfinite(wordSize.width) || !isfinite(wordSize.height) || wordSize.width <= 0 || wordSize.height <= 0 || wordSize.width > 1024 || wordSize.height > 128) return nil;
-    _speed = MAX(0.35, MIN(2, speed));
-    CGFloat scale = MIN(2, root.window.screen.scale ?: UIScreen.mainScreen.scale);
+    CGSize size = root.bounds.size;
+    if (!isfinite(size.width) || !isfinite(size.height) || size.width <= 0 || size.height <= 0 || size.width > 1024 || size.height > 128) return nil;
+    CGFloat scale = MIN(2, root.traitCollection.displayScale ?: 2);
     NSUInteger pixels = 0;
     for (UILabel *label in labels) {
-        CGSize size = label.bounds.size;
-        if (!isfinite(size.width) || !isfinite(size.height) || size.width <= 0 || size.height <= 0 || size.width > 2048 || size.height > 256) return nil;
-        pixels += (NSUInteger)ceil(size.width * scale) * (NSUInteger)ceil(size.height * scale);
+        CGSize glyphSize = label.bounds.size;
+        if (!isfinite(glyphSize.width) || !isfinite(glyphSize.height) || glyphSize.width <= 0 || glyphSize.height <= 0 || glyphSize.width > 2048 || glyphSize.height > 256) return nil;
+        pixels += (NSUInteger)ceil(glyphSize.width * scale) * (NSUInteger)ceil(glyphSize.height * scale);
         if (pixels > kPixelLimit) return nil;
     }
-    if (labels.count > kMaskLimit - liveMasks || pixels > kPixelLimit - livePixels) return nil;
-    NSMutableArray<CALayer *> *clocks = [NSMutableArray arrayWithCapacity:labels.count];
-    CGFloat width = MAX(1, root.bounds.size.width), height = MAX(1, root.bounds.size.height);
-    NSMutableArray *colors = [NSMutableArray array];
-    for (UIColor *color in palette(style)) [colors addObject:(id)color.CGColor];
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
+    NSUInteger surfacePixels = (NSUInteger)ceil(size.width * scale) * (NSUInteger)ceil(size.height * 2 * scale);
+    if (labels.count > kMaskLimit - liveMasks || pixels > kPixelLimit - livePixels ||
+        liveSurfaces >= kSurfaceLimit || surfacePixels > kSurfacePixelLimit - liveSurfacePixels) return nil;
+    preparePipeline();
+    if (!device || !queue) return nil;
+    MTKTextureLoader *loader = [[MTKTextureLoader alloc] initWithDevice:device];
+    NSMutableArray *textures = [NSMutableArray arrayWithCapacity:labels.count];
     for (UILabel *label in labels) {
         UIImage *mask = glyphMask(label, scale);
-        if (!mask.CGImage) {
-            for (CALayer *clock in clocks) [clock removeFromSuperlayer];
-            [CATransaction commit];
-            return nil;
-        }
-        CALayer *clock = [CALayer layer];
-        clock.name = @"spoti.pw.lyrics.effect";
-        clock.frame = label.bounds;
-        clock.masksToBounds = YES;
-        clock.opacity = MIN(1, intensity);
-        clock.hidden = YES;
-        clock.speed = 0;
-        CALayer *shape = [CALayer layer];
-        shape.frame = clock.bounds;
-        shape.contents = (id)mask.CGImage;
-        shape.contentsScale = scale;
-        clock.mask = shape;
-        CGFloat x = label == root ? 0 : label.center.x - label.bounds.size.width / 2;
-        CGFloat y = label == root ? 0 : label.center.y - label.bounds.size.height / 2;
-        CAGradientLayer *light = [CAGradientLayer layer];
-        light.frame = CGRectMake(-x - width, -y - height, width * 3, height * 3);
-        light.colors = colors;
-        light.locations = style == 4 ? @[@0, @0.35, @0.43, @0.48, @0.52, @1] : @[@0, @0.2, @0.38, @0.5, @0.67, @1];
-        light.startPoint = style == 2 ? CGPointMake(0.2, 1) : CGPointMake(0, 0.3);
-        light.endPoint = style == 2 ? CGPointMake(0.8, 0) : CGPointMake(1, 0.7);
-        [clock addSublayer:light];
-        double duration = style == 2 ? 1.8 : style == 4 ? 2.8 : 3.6;
-        CABasicAnimation *flow = travel(style == 2 ? @"transform.translation.y" : @"transform.translation.x", style == 2 ? height : -width, style == 2 ? -height : width, duration);
-        flow.autoreverses = YES;
-        [light addAnimation:flow forKey:@"flow"];
-        if (style == 3 || style == 5) {
-            CAShapeLayer *lines = [CAShapeLayer layer];
-            lines.frame = CGRectMake(-x, -y - height, width, height * 3);
-            lines.strokeColor = [UIColor colorWithWhite:1 alpha:style == 3 ? 0.45 : 0.8].CGColor;
-            lines.fillColor = nil;
-            lines.lineWidth = style == 3 ? 0.65 : 0.75;
-            CGFloat step = style == 3 ? 4 : MAX(6, round(height / 5));
-            UIBezierPath *grid = [UIBezierPath bezierPath];
-            for (CGFloat row = 0; row <= height * 3; row += step) {
-                [grid moveToPoint:CGPointMake(0, row)];
-                [grid addLineToPoint:CGPointMake(width, row)];
-            }
-            if (style == 5) for (CGFloat col = 0; col <= width; col += step) {
-                [grid moveToPoint:CGPointMake(col, 0)];
-                [grid addLineToPoint:CGPointMake(col, height * 3)];
-            }
-            lines.path = grid.CGPath;
-            [clock addSublayer:lines];
-            [lines addAnimation:travel(@"transform.translation.y", 0, step, style == 3 ? 1.6 : 3.0) forKey:@"scan"];
-        }
-        [label.layer addSublayer:clock];
-        [clocks addObject:clock];
+        id<MTLTexture> texture = mask.CGImage ? [loader newTextureWithCGImage:mask.CGImage options:@{MTKTextureLoaderOptionSRGB: @NO, MTKTextureLoaderOptionOrigin: MTKTextureLoaderOriginTopLeft} error:nil] : nil;
+        if (!texture) return nil;
+        [textures addObject:texture];
     }
+    _root = root;
+    _labels = [labels copy];
+    _textures = textures;
+    _style = style;
+    _intensity = MIN(1, intensity);
+    _speed = MAX(0.35, MIN(2, speed));
+    _available = dispatch_semaphore_create(1);
+    _submission = [SGRLyricsShaderSubmission new];
+    _surface = [CAMetalLayer layer];
+    _surface.name = @"spoti.pw.lyrics.shader";
+    _surface.device = device;
+    _surface.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    _surface.opaque = NO;
+    _surface.framebufferOnly = YES;
+    _surface.contentsScale = scale;
+    _surface.maximumDrawableCount = 3;
+    _surface.allowsNextDrawableTimeout = YES;
+    _surface.frame = CGRectMake(0, -size.height / 2, size.width, size.height * 2);
+    _surface.drawableSize = CGSizeMake(ceil(size.width * scale), ceil(size.height * 2 * scale));
+    _surface.hidden = YES;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    [root.layer addSublayer:_surface];
     [CATransaction commit];
-    _clocks = clocks;
     _maskCount = labels.count;
     _pixels = pixels;
+    _surfacePixels = surfacePixels;
     liveMasks += _maskCount;
     livePixels += _pixels;
+    liveSurfaces++;
+    liveSurfacePixels += _surfacePixels;
     return self;
 }
 
 - (void)showTime:(double)seconds running:(BOOL)running {
-    if (!_clocks.count || !isfinite(seconds)) return;
-    CFTimeInterval now = CACurrentMediaTime();
-    CALayer *first = _clocks.firstObject;
-    double local = 1 + MAX(0, seconds) * _speed;
-    double shown = [first convertTime:now fromLayer:nil];
-    if (_anchored && _running == running && (!running || fabs(shown - local) < 0.08)) return;
-    _anchored = YES;
-    _running = running;
+    UIView *root = _root;
+    if (!_surface || !isfinite(seconds)) return;
+    BOOL visible = running && root.window && !root.hidden && !UIAccessibilityIsReduceMotionEnabled() && !_failed;
+    _submission.enabled = visible;
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    for (CALayer *clock in _clocks) {
-        CFTimeInterval parent = [clock.superlayer convertTime:now fromLayer:nil];
-        clock.speed = running ? _speed : 0;
-        clock.timeOffset = local;
-        clock.beginTime = parent;
-        clock.hidden = !running;
-    }
+    _surface.hidden = !visible || !pipeline;
     [CATransaction commit];
+    if (!visible || !pipeline || dispatch_semaphore_wait(_available, DISPATCH_TIME_NOW)) return;
+    SGRLyricsUniforms uniforms = {(float)(MIN(1e9, MAX(0, seconds)) * _speed), (float)_intensity, (uint32_t)_style, 0};
+    NSMutableData *geometry = [NSMutableData dataWithLength:sizeof(SGRLyricsVertex) * 6 * _labels.count];
+    SGRLyricsVertex *vertices = geometry.mutableBytes;
+    CGSize size = root.bounds.size, canvas = _surface.bounds.size;
+    const vector_float2 uv[] = {{0,0},{0,1},{1,0},{1,0},{0,1},{1,1}};
+    for (NSUInteger i = 0; i < _labels.count; i++) {
+        UILabel *label = _labels[i];
+        SGRLyricsVertex *quad = vertices + i * 6;
+        if (label.hidden || label.alpha <= 0) continue;
+        for (NSUInteger j = 0; j < 6; j++) {
+            CGPoint local = CGPointMake(CGRectGetMinX(label.bounds) + uv[j].x * label.bounds.size.width,
+                                       CGRectGetMinY(label.bounds) + uv[j].y * label.bounds.size.height);
+            CGPoint position = [label convertPoint:local toView:root];
+            quad[j].position = (vector_float2){position.x / canvas.width * 2 - 1, 1 - (position.y + size.height / 2) / canvas.height * 2};
+            CGFloat x = label == root ? local.x : label.center.x - label.bounds.size.width / 2 + local.x;
+            quad[j].field = (vector_float2){x / size.height, local.y / size.height};
+            quad[j].uv = uv[j];
+        }
+    }
+    dispatch_semaphore_t available = _available;
+    SGRLyricsShaderSubmission *submission = _submission;
+    CAMetalLayer *surface = _surface;
+    NSArray<id<MTLTexture>> *textures = _textures;
+    id<MTLRenderPipelineState> currentPipeline = pipeline;
+    __weak SGRLyricsShaderEffect *weakSelf = self;
+    dispatch_async(renderQueue, ^{
+        @autoreleasepool {
+            if (!submission.enabled) {
+                dispatch_semaphore_signal(available);
+                return;
+            }
+            id<CAMetalDrawable> drawable = [surface nextDrawable];
+            id<MTLCommandBuffer> command = drawable ? [queue commandBuffer] : nil;
+            if (!command) {
+                dispatch_semaphore_signal(available);
+                return;
+            }
+            MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+            pass.colorAttachments[0].texture = drawable.texture;
+            pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+            pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+            pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+            id<MTLRenderCommandEncoder> encoder = [command renderCommandEncoderWithDescriptor:pass];
+            if (!encoder) {
+                dispatch_semaphore_signal(available);
+                return;
+            }
+            [encoder setRenderPipelineState:currentPipeline];
+            [encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+            const SGRLyricsVertex *quads = geometry.bytes;
+            for (NSUInteger i = 0; i < textures.count; i++) {
+                [encoder setVertexBytes:quads + i * 6 length:sizeof(SGRLyricsVertex) * 6 atIndex:0];
+                [encoder setFragmentTexture:textures[i] atIndex:0];
+                [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+            }
+            [encoder endEncoding];
+            [command addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+                dispatch_semaphore_signal(available);
+                if (completed.status == MTLCommandBufferStatusError) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        SGRLyricsShaderEffect *effect = weakSelf;
+                        if (!effect) return;
+                        effect->_failed = YES;
+                        [effect showTime:0 running:NO];
+                        SGLog(@"lyrics shader: render failed, keeping static text (%@)", completed.error.localizedDescription);
+                    });
+                }
+            }];
+            [command presentDrawable:drawable];
+            [command commit];
+        }
+    });
 }
 
 - (void)invalidate {
-    for (CALayer *clock in _clocks) {
-        [clock removeAllAnimations];
-        for (CALayer *effect in clock.sublayers) [effect removeAllAnimations];
-        [clock removeFromSuperlayer];
-    }
-    _clocks = nil;
+    _submission.enabled = NO;
+    [_surface removeFromSuperlayer];
+    if (_surfacePixels) liveSurfaces--;
     liveMasks -= _maskCount;
     livePixels -= _pixels;
-    _maskCount = _pixels = 0;
+    liveSurfacePixels -= _surfacePixels;
+    _maskCount = _pixels = _surfacePixels = 0;
+    _surface = nil;
+    _labels = nil;
+    _textures = nil;
 }
 
 - (void)dealloc { [self invalidate]; }

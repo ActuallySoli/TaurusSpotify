@@ -369,7 +369,15 @@ Lyrics: the ordered list of lyrics sources, lyrics for every track,
 naming the source in the redesign, artist-name replacement on the lock screen,
 and glass lyrics in the native look; in the redesign also
 which of the lyrics, their pronunciation and their translation is set largest, Genius meaning marks (which can
-be hidden without losing the hold-on-a-line meaning sheet), and the translation's language. Player controls
+be hidden without losing the hold-on-a-line meaning sheet), and the translation's language. Lyrics → Adjust → Lyrics shader offers Classic plus Neon,
+Inferno, Hologram, Chrome and Blueprint, with intensity and speed controls that apply immediately.
+The five word fills are independently authored Metal shaders. Each active word uses one transparent
+surface and glyph textures that follow its existing letter motion and inherited timing mask.
+Compilation and GPU submission run off the UI thread; the existing lyrics display link drives them.
+Paused/offscreen lyrics and Reduce Motion keep the static text. Allocation and GPU failures also keep
+that text; glyphs and surfaces have shared memory/count budgets. The saved effect profiles keep their
+existing names and format. GPU and simulator checks are in `harness/lyrics-shaders/`.
+Player controls
 include independent portrait and landscape auto-hide switches for the lyrics screen. Lock Screen: its controls and, under Artwork, the full-screen style selector and ordered style hierarchy:
 Canvas (the track's Canvas or the album's Apple Music animated cover), Lyrics over the blurred cover,
 Fill artwork, Colourful (Every Song's moving-cover treatment), and Default (iOS's full album artwork).

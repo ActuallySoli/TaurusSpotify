@@ -171,7 +171,7 @@ static void presentStyleSheet(UIViewController *owner) {
         SGRSetLyricsAnimationIndex(index, sheetPage);
     });
     NSArray<NSString *> *shaders = SGRLyricsShaderNames();
-    SGModRow *shader = SGMenuRow(@"Word effect", shaders, ^NSString *{ return shaders[(NSUInteger)SGRLyricsShaderIndex()]; }, ^(NSInteger index) {
+    SGModRow *shader = SGMenuRow(@"Lyrics shader", shaders, ^NSString *{ return shaders[(NSUInteger)SGRLyricsShaderIndex()]; }, ^(NSInteger index) {
         SGRSetLyricsShaderIndex(index, sheetPage);
     });
     SGModRow *intensity = SGSliderRow(@"Effect intensity", nil, 0, 1, 0.05, ^double { return SGRLyricsShaderOptionsNow().intensity; }, ^(double value) {
@@ -191,7 +191,7 @@ static void presentStyleSheet(UIViewController *owner) {
         SGRResetLyricsLook(nil);   // the sheet and the page both read the look again
     });
     NSString *footer = @"Blur is how much the lines away from the one sung soften. Glow and Wave are how strongly a held "
-                       @"word glows and its letters rise. 100% is Apple Music's. Font and Animation are for the lyrics only. Wave, Glow, Bounce and Ripple move each letter as it is sung (Glow and Wave above set how much); Float lifts the whole word. Word effect adds moving light inside sung words: Neon color ribbons, Inferno ember bands, Hologram prism scanlines, Chrome a metallic sheen, and Blueprint a drafting scan. Classic keeps the original text. Effects stop while paused or out of view; Reduce Motion keeps their static colors. Intensity and speed affect these layers only.";
+                       @"word glows and its letters rise. 100% is Apple Music's. Font and Animation are for the lyrics only. Wave, Glow, Bounce and Ripple move each letter as it is sung (Glow and Wave above set how much); Float lifts the whole word. Lyrics shader fills sung words with moving light: Neon color ribbons, Inferno flowing flames, Hologram prism scanlines, Chrome liquid reflections, and Blueprint a drafting grid. Classic keeps the original text. Effects stop while paused or out of view; Reduce Motion keeps their static colors. Intensity and speed affect these layers only.";
     SGRLyricsStyleSheet *page = [[SGRLyricsStyleSheet alloc] initWithTitle:@"Lyrics Style" intro:nil
                                                                  sections:@[SGNotedSection(nil, rows, footer), SGSection(@"Effect profiles", @[shareProfile, importProfile]),
                                                                            SGSection(nil, @[reset])] footer:nil];
