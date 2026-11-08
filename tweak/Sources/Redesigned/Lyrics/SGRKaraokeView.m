@@ -109,7 +109,7 @@ static BOOL readsRightToLeft(NSString *text) {
 
 // Laid against the right edge: a line written right to left, or a second voice's written left to right.
 static BOOL alignsRight(SGKaraokeLine *line) {
-    return (line.align == SGKaraokeAlignTrailing) != readsRightToLeft(SGKaraokeLineText(line));
+    return readsRightToLeft(SGKaraokeLineText(line));
 }
 
 static UILabel *wordLabel(NSString *text, UIFont *font, UIColor *color, CGRect frame, BOOL rightToLeft) {
@@ -1206,7 +1206,7 @@ typedef struct {
     _credit.font = [UIFont systemFontOfSize:kCreditSize weight:UIFontWeightSemibold];
     _credit.textColor = [UIColor colorWithWhite:1 alpha:kCreditAlpha];
     _credit.hidden = YES;
-    _crediting = SGFlag(SGKeyLyricsCredit, NO);
+    _crediting = SGFlag(SGKeyLyricsCredit, YES);
     _sweepsEstimates = SGFlag(SGKeyLyricsSimulateWords, NO);
     [self addSubview:_credit];
     [self addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapped:)]];
@@ -1957,6 +1957,7 @@ static BOOL lyricsAreForeign(NSArray<SGKaraokeLine *> *lines, NSString *language
     NSString *text = source.length && _crediting ? [NSString stringWithFormat:@"Lyrics from %@", source] : nil;
     if (text == _credit.text || [text isEqualToString:_credit.text]) return;
     _credit.text = text;
+    [_credit sizeToFit];
     _credit.hidden = !_showing || !text.length;
     [self setNeedsLayout];
 }
@@ -2093,12 +2094,38 @@ static BOOL lyricsAreForeign(NSArray<SGKaraokeLine *> *lines, NSString *language
     if (_sample) return;   // the preview's song is its own
     if (note.object && ![note.object isEqualToString:_track]) return;
     _builtWidth = 0;
-    if (_lines) {
+    NSArray<UIView *> *oldViews = _lines && _shown.count ? [_shown.allValues copy] : nil;
+    if (oldViews.count) {
+        UIView *oldContainer = [[UIView alloc] initWithFrame:self.bounds];
+        oldContainer.userInteractionEnabled = NO;
+        for (UIView *v in oldViews) [oldContainer addSubview:v];
+        [self addSubview:oldContainer];
+        [_shown removeAllObjects];
         _lines = nil;
-        [self dropLineViews];
+        _plain = NO;
+        NSString *track = _track;
+        if (track && (_lines = SGKaraokeLinesForTrack(track))) {
+            [self timeLines];
+            [self setNeedsLayout];
+            [self layoutIfNeeded];
+            double now = [self clockMs];
+            NSInteger sung[kMostSung], focus, openBreak;
+            [self sungAt:now into:sung focus:&focus openBreak:&openBreak];
+        }
+        oldContainer.alpha = 1.0;
+        [UIView animateWithDuration:0.35 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
+            oldContainer.alpha = 0.0;
+        } completion:^(BOOL finished) {
+            [oldContainer removeFromSuperview];
+        }];
+    } else {
+        if (_lines) {
+            _lines = nil;
+            [self dropLineViews];
+        }
+        _plain = NO;
+        [self setNeedsLayout];
     }
-    _plain = NO;
-    [self setNeedsLayout];
     [self scheduleLink];
 }
 

@@ -37,6 +37,8 @@
 @property (nonatomic, copy) NSString *pageProvider;
 @property (nonatomic) BOOL synced;                // the lines have starts of their own
 @property (nonatomic) BOOL wordTimed;             // the words inside them are timed, not estimated
+@property (nonatomic) BOOL rateLimited;
+@property (nonatomic) NSTimeInterval retryAfter;
 // Every line as Spotify's lyrics page takes it: ♪ over a break and an empty last line where the
 // singing ends. Starts are in milliseconds, all 0 when not synced. nil when a source times words
 // but has no text for Spotify's own page.
@@ -135,6 +137,11 @@ void SGLyricsNoteReply(NSURLResponse *response, NSError *error);
 BOOL SGLyricsReplyFailed(NSURLResponse *response, NSError *error);
 // A number read off a source's JSON: 0 for NSNull, nil and anything that cannot answer doubleValue.
 NSInteger SGLyricsNumber(id value);
+void SGLyricsNoteRateLimit(NSTimeInterval wait);
+NSTimeInterval SGLyricsCurrentRateLimitUntil(void);
+NSTimeInterval SGLyricsCurrentRetryAfter(void);
+void SGLyricsRememberTrackInfo(NSString *trackID, NSString *title, NSString *artist, NSString *album, NSInteger seconds);
+void SGLyricsResolveTrackName(NSString *trackID, void (^done)(NSString *title, NSString *artist, NSString *album, NSInteger seconds));
 
 // SGTTML.m. Apple Music's TTML as timed lines, the voices already turned into alignments and each
 // line's translation and pronunciation added where the head has them; nil when the document holds no

@@ -29,6 +29,7 @@ __attribute__((visibility("default")))
 + (void)enableOffline:(void (^)(NSDictionary *, NSString *))completion;
 + (void)restoreKeyMode:(void (^)(BOOL, NSString *))completion;
 + (void)loadDetails:(BOOL)journal completion:(void (^)(NSDictionary *))completion;
++ (void)syncOfflineTracks;
 @end
 
 @implementation SAPTaurusBridge
@@ -57,4 +58,5 @@ __attribute__((visibility("default")))
 + (void)enableOffline:(void (^)(NSDictionary *, NSString *))completion { [SAPSettingsActions enableOfflineOnCurrentDevice:completion]; }
 + (void)restoreKeyMode:(void (^)(BOOL, NSString *))completion { [SAPSettingsActions setKeyRequestMode:0 completion:completion]; }
 + (void)loadDetails:(BOOL)journal completion:(void (^)(NSDictionary *))completion { [SAPSettingsActions loadDetails:journal completion:completion]; }
++ (void)syncOfflineTracks { SAPQueryOfflineItems(); }
 @end
