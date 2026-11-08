@@ -130,6 +130,9 @@ static void applyRow(UIView *cell, UIView *page, UIView *row) {
     NSSet<NSString *> *artistsToHide = SGHidden(SGRKeyHideAlbumArtists) ? albumArtists(page) : [NSSet set];
     SGForEachView(subtitle, ^(UIView *v) {
         if (![v isKindOfClass:UILabel.class]) return;
+        for (UIView *p = v; p && p != subtitle; p = p.superview) {
+            if (explicitMarker(p)) return;
+        }
         UILabel *label = (UILabel *)v;
         applyArtistFilter(label, artistsToHide, hideAll);
         if (![label.textColor isEqual:SGRSecondary()]) label.textColor = SGRSecondary();

@@ -4,6 +4,7 @@
 #import "Shared/LockScreenArtwork/SGAppleArtwork.h"
 #import "Shared/LockScreenArtwork/SGArtworkFile.h"
 #import "Shared/LockScreenArtwork/SGCanvas.h"
+#import "Shared/AnimatedArtwork/AnimatedArtwork.h"
 #import "Album.h"
 
 static const CGFloat kDissolve = 0.46, kTopScrim = 140, kTopScrimAlpha = 0.28;
@@ -11,7 +12,7 @@ static const CGFloat kMinHero = 120, kMinCover = 80;
 
 static char kHeaderKey, kCoverKey, kTitleKey, kParentKey, kMetaKey, kAddKey, kDownloadKey, kPlayKey, kShuffleKey;
 static char kHeroKey, kHeroHeightKey, kHeaderHeightKey, kInfoKey, kHeaderWatchedKey, kRetryKey;
-static char kExploreKey, kRowWatchedKey, kMoreKey, kPinnedMoreKey;
+static char kExploreKey, kRowWatchedKey, kMoreKey, kPinnedMoreKey, kNotesForKey, kNotesTextKey;
 
 #pragma mark - moving Spotify's views
 
@@ -350,7 +351,23 @@ static SGRHeaderInfo *applyInfo(UIView *header, UIView *page) {
     UIView *metadata = SGRFindByIdentifier(header, @"Components.UI.MetadataRow", &kMetaKey);
     NSString *name = firstText(title), *length = metadataText(metadata);
     NSString *artist = firstText(parent) ?: trimmed(parent.accessibilityLabel);
-    [info showTitle:name creator:artist length:length about:nil];
+    NSString *notes = objc_getAssociatedObject(info, &kNotesTextKey);
+    BOOL showHeaderNotes = !SGHidden(SGRKeyAlbumHideNotes) && SGInt(SGRKeyAlbumNotesPlace, 0) == 0;
+    [info showTitle:name creator:artist length:length about:showHeaderNotes ? notes : nil];
+    if (name.length && artist.length && showHeaderNotes) {
+        NSString *wanted = [NSString stringWithFormat:@"%@\n%@", artist, name];
+        if (![objc_getAssociatedObject(info, &kNotesForKey) isEqualToString:wanted]) {
+            objc_setAssociatedObject(info, &kNotesForKey, wanted, OBJC_ASSOCIATION_COPY_NONATOMIC);
+            __weak SGRHeaderInfo *weakInfo = info;
+            __weak UIView *weakHeader = header, *weakPage = page;
+            SGMotionAlbumNotes(artist, name, ^(NSString *found) {
+                SGRHeaderInfo *shown = weakInfo;
+                if (!shown || ![objc_getAssociatedObject(shown, &kNotesForKey) isEqualToString:wanted] || !found.length) return;
+                objc_setAssociatedObject(shown, &kNotesTextKey, found, OBJC_ASSOCIATION_COPY_NONATOMIC);
+                if (weakHeader && weakPage) applyHeader(weakHeader, weakPage);
+            });
+        }
+    }
     [(SGRAlbumHero *)objc_getAssociatedObject(header, &kHeroKey) findMotionOf:name by:artist];
     NSInteger tries = [objc_getAssociatedObject(header, &kRetryKey) integerValue];
     if (!length && metadata && tries < 12) {

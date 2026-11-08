@@ -3,6 +3,13 @@
 
 // Apple Music's artist logo in place of the name where one is available.
 #define SGRKeyArtistLogo @"spotifyglass.redesign.artist.logo"
+#define SGRKeyArtistApplePhoto @"spotifyglass.redesign.artist.applePhoto"
+#define SGRKeyArtistMotion @"spotifyglass.redesign.artist.motion"
+#define SGRKeyArtistHideTabs @"spotifyglass.redesign.artist.hideTabs"
+#define SGRKeyArtistHideVideos @"spotifyglass.redesign.artist.hideVideos"
+#define SGRKeyArtistHidePick @"spotifyglass.redesign.artist.hidePick"
+#define SGRKeyArtistHideCountdown @"spotifyglass.redesign.artist.hideCountdown"
+#define SGRKeyArtistHideAbout @"spotifyglass.redesign.artist.hideAbout"
 UIViewController *SGRArtistSettingsPage(void);
 
 // The artist page `view` is on, or nil: the TemplateView with the identifier creator-page.

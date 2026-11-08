@@ -3,6 +3,7 @@
 #import "AudioEffects.h"
 #import "AudioEffectsApply.h"
 #import "AudioEffectsPresets.h"
+#include <math.h>
 
 static NSString *const kPrefix = @"spotifyglass.dsp.";
 
@@ -131,6 +132,206 @@ void SGDSPDeleteUserPreset(NSString *name) {
     [presets removeObjectForKey:name];
     [store() setObject:presets forKey:SGKeyDSPUserPresets];
 }
+
+NSString *SGDSPPresetUniqueName(NSString *name) {
+    if (!name.length) return name;
+    NSString *unique = name;
+    for (int i = 2; i < 100; i++) {
+        if (![userPresets()[unique] isKindOfClass:NSDictionary.class]) return unique;
+        unique = [name stringByAppendingFormat:@" (%d)", i];
+    }
+    return [name stringByAppendingFormat:@" (%tu)", (unsigned long)[NSDate date].timeIntervalSince1970];
+}
+
+#pragma mark - sharing
+
+// What each known dsp key may take: a switch or a number as an NSNumber, the gains or the Graphic EQ's own
+// line as text of numbers, a library file's plain name, and the Graphic EQ both ways, its on switch as a
+// number and what it plays under as text. A key that is none of these is another build's and is dropped.
+typedef NS_ENUM(NSInteger, SGDSPPresetValueKind) {
+    SGDSPPresetValueSwitch = 1,
+    SGDSPPresetValueNumber,
+    SGDSPPresetValueGain,        // SGKeyDSPCompanderGains, SGKeyDSPEqualizerGains
+    SGDSPPresetValueNodes,       // SGKeyDSPGraphicEqNodes: the correction itself
+    SGDSPPresetValueFile,        // SGKeyDSPConvolverFile, SGKeyDSPDDCFile, SGKeyDSPLiveprogFile
+    SGDSPPresetValueBoth,        // SGKeyDSPGraphicEq: its switch, and which correction it plays
+};
+
+static SGDSPPresetValueKind keyKind(NSString *key) {
+    static NSDictionary<NSString *, NSNumber *> *kinds;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableDictionary<NSString *, NSNumber *> *all = [NSMutableDictionary dictionary];
+        for (NSString *k in @[SGKeyDSPCompander, SGKeyDSPBass, SGKeyDSPEqualizer, SGKeyDSPConvolver,
+                              SGKeyDSPDDC, SGKeyDSPLiveprog, SGKeyDSPReverb, SGKeyDSPStereoWide,
+                              SGKeyDSPCrossfeed, SGKeyDSPTube])
+            all[k] = @(SGDSPPresetValueSwitch);
+        for (NSString *k in @[SGKeyDSPPostGain, SGKeyDSPLimiterThreshold, SGKeyDSPLimiterRelease,
+                              SGKeyDSPCompanderTime, SGKeyDSPBassGain, SGKeyDSPConvolverMode,
+                              SGKeyDSPReverbPreset, SGKeyDSPReverbAmount, SGKeyDSPStereoWideLevel,
+                              SGKeyDSPCrossfeedMode, SGKeyDSPTubeDrive])
+            all[k] = @(SGDSPPresetValueNumber);
+        for (NSString *k in @[SGKeyDSPCompanderGains, SGKeyDSPEqualizerGains]) all[k] = @(SGDSPPresetValueGain);
+        all[SGKeyDSPGraphicEqNodes] = @(SGDSPPresetValueNodes);
+        for (NSString *k in @[SGKeyDSPConvolverFile, SGKeyDSPDDCFile, SGKeyDSPLiveprogFile]) all[k] = @(SGDSPPresetValueFile);
+        all[SGKeyDSPGraphicEq] = @(SGDSPPresetValueBoth);
+        kinds = all;
+    });
+    return (SGDSPPresetValueKind)[kinds[key] integerValue];   // 0 = not a preset key
+}
+
+// The gains as the text SGDSPSetGains leaves them, padded and clamped the same way, so an imported preset's
+// gains read back through SGDSPGains as they do through the page's own editing.
+static NSString *gainText(NSArray<NSNumber *> *gains, NSUInteger count, double limit) {
+    NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithCapacity:count];
+    for (NSUInteger i = 0; i < count; i++) {
+        double gain = i < gains.count ? gains[i].doubleValue : 0;
+        [parts addObject:[NSString stringWithFormat:@"%.2f", MAX(-limit, MIN(limit, gain))]];
+    }
+    return [parts componentsJoinedByString:@";"];
+}
+
+// The gains' count and limit for their key: the compander's seven within its own limit, the equalizer's
+// fifteen within its wider one — SGDSPGains reads them by the key.
+static void gainSizing(NSString *key, NSUInteger *count, double *limit) {
+    BOOL compander = [key isEqualToString:SGKeyDSPCompanderGains];
+    *count = compander ? 7 : 15;
+    *limit = compander ? SGDSPCompanderGainLimit : SGDSPEqualizerGainLimit;
+}
+
+// The value for a known key, or nil when it is the wrong kind or out of bounds for that key. A wrong kind for
+// a known key turns the whole file away, not a silent drop: a follower deserves to know a shared preset does
+// not check. Unknown keys never get here.
+static id checkedValue(NSString *key, id value, SGDSPPresetValueKind kind) {
+    BOOL number = value && [value isKindOfClass:NSNumber.class];
+    if (number && !isfinite([value doubleValue])) return nil;
+    switch (kind) {
+        case SGDSPPresetValueSwitch:
+            return number ? @([value boolValue]) : nil;
+        case SGDSPPresetValueNumber: {
+            if (!number) return nil;
+            SGDSPRange range = SGDSPRangeFor(key);
+            return @(MAX(range.min, MIN(range.max, [value doubleValue])));
+        }
+        case SGDSPPresetValueGain: {
+            NSString *text = [value isKindOfClass:NSString.class] ? value : nil;
+            if ([value isKindOfClass:NSArray.class]) {
+                // A list of numbers, bounded before anything reads it.
+                NSArray *list = value;
+                if (list.count > 64) return nil;
+                for (id gain in list) if (![gain isKindOfClass:NSNumber.class] || !isfinite([gain doubleValue])) return nil;
+                text = [list componentsJoinedByString:@";"];
+            }
+            if (!text || text.length > 4096) return nil;
+            NSArray<NSString *> *parts = [text componentsSeparatedByString:@";"];
+            if (parts.count > 64) return nil;
+            NSMutableArray<NSNumber *> *gains = [NSMutableArray array];
+            for (NSString *part in parts) {
+                NSScanner *read = [NSScanner scannerWithString:part];
+                double gain;
+                if (![read scanDouble:&gain] || !read.isAtEnd || !isfinite(gain)) return nil;
+                [gains addObject:@(gain)];
+            }
+            NSUInteger count; double limit;
+            gainSizing(key, &count, &limit);
+            return gainText(gains, count, limit);
+        }
+        case SGDSPPresetValueNodes:
+            // The same line the editors save, or nothing.
+            return [value isKindOfClass:NSString.class] ? SGDSPGraphicEqLine(value) : nil;
+        case SGDSPPresetValueFile: {
+            // AudioEffectsFiles' own check for a library file's name: nothing that leaves its folder.
+            if (![value isKindOfClass:NSString.class]) return nil;
+            NSString *name = value;
+            if (!name.length || name.length > 128 || ![name.lastPathComponent isEqualToString:name]
+                || [name hasPrefix:@"."]) return nil;
+            return name;
+        }
+        case SGDSPPresetValueBoth: {
+            // SGKeyDSPGraphicEq: its switch as a number, and which correction it plays under as text, empty
+            // allowed (None does).
+            if (number) return @([value boolValue]);
+            if (![value isKindOfClass:NSString.class]) return nil;
+            NSString *text = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            return text.length <= 512 ? text : nil;
+        }
+        default:
+            return nil;
+    }
+}
+
+// The name behind the file, trimmed and bounded, or nil when there is none and the file is turned away.
+static NSString *checkedName(id raw) {
+    if (![raw isKindOfClass:NSString.class]) return nil;
+    NSString *name = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return name.length && name.length <= 64 ? name : nil;
+}
+
+BOOL SGDSPPresetFromFile(id file, NSString **name, NSDictionary<NSString *, id> **values, NSString **why) {
+    // A file of one preset stays small; anything past its handful of keys and bounded texts did not come
+    // from Export anyway.
+    if (![file isKindOfClass:NSDictionary.class]) { if (why) *why = @"Not a shared preset file."; return NO; }
+    if (![file[@"type"] isKindOfClass:NSString.class]
+        || ![file[@"type"] isEqualToString:SGDSPPresetShareType]) {
+        if (why) *why = @"Not a shared preset file. Pick one made by Export.";
+        return NO;
+    }
+    if (![file[@"version"] isKindOfClass:NSNumber.class]
+        || ![file[@"version"] isEqualToNumber:@(SGDSPPresetShareVersion)]) {
+        if (why) *why = [NSString stringWithFormat:@"A version %@ preset needs a newer or older copy of the mod.",
+                         [file[@"version"] isKindOfClass:NSString.class] ? file[@"version"] : @"this file does not say"];
+        return NO;
+    }
+    NSString *presetName = checkedName(file[@"name"]);
+    if (!presetName) { if (why) *why = @"The file does not name its preset."; return NO; }
+    NSDictionary *saved = file[@"values"];
+    if (![saved isKindOfClass:NSDictionary.class] || saved.count < 1 || saved.count > 64) {
+        if (why) *why = @"The file's preset holds nothing this copy can set, or far too much.";
+        return NO;
+    }
+    NSMutableDictionary<NSString *, id> *checked = [NSMutableDictionary dictionary];
+    for (NSString *key in saved) {
+        SGDSPPresetValueKind kind = keyKind(key);
+        if (!kind) continue;                                   // another build's key, left out
+        if (![key hasPrefix:kPrefix]) continue;
+        id value = checkedValue(key, saved[key], kind);
+        if (!value) { if (why) *why = @"One of the preset's settings is not the kind this copy can set."; return NO; }
+        checked[key] = value;
+    }
+    if (!checked.count) { if (why) *why = @"The file's preset holds nothing this copy can set."; return NO; }
+    if (name) *name = presetName;
+    if (values) *values = checked;
+    return YES;
+}
+
+NSDictionary<NSString *, id> *SGDSPPresetShareFile(NSString *name) {
+    NSDictionary *values = userPresets()[name];
+    if (![values isKindOfClass:NSDictionary.class]) return nil;
+    // Only keys this build accepts back: a follower's preset keeps every effect this one can set, and
+    // whatever else the preset picked up along the way stays here.
+    NSMutableDictionary *shared = [NSMutableDictionary dictionary];
+    for (NSString *key in values) {
+        SGDSPPresetValueKind kind = keyKind(key);
+        if (kind) {
+            id value = checkedValue(key, values[key], kind);
+            if (value) shared[key] = value;
+        }
+    }
+    return shared.count ? @{
+        @"type": SGDSPPresetShareType,
+        @"version": @(SGDSPPresetShareVersion),
+        @"name": name,
+        @"values": shared,
+    } : nil;
+}
+
+void SGDSPSavePresetValues(NSString *name, NSDictionary<NSString *, id> *values) {
+    if (!name.length || ![values isKindOfClass:NSDictionary.class]) return;
+    NSMutableDictionary *presets = [userPresets() mutableCopy];
+    presets[[name copy]] = [values copy];
+    [store() setObject:presets forKey:SGKeyDSPUserPresets];
+}
+
 
 #pragma mark - GraphicEQ text
 

@@ -58,6 +58,7 @@ static const CGFloat kLyricsBlur = 0.3;
     UIVisualEffectView *_lyricsBlur;
     UIViewPropertyAnimator *_lyricsBlurAnimator;
     BOOL _lyricsBlurred;
+    BOOL _solidBlack;
     CALayer *_solid;
     CAGradientLayer *_black;
     CALayer *_backdrop;
@@ -66,6 +67,8 @@ static const CGFloat kLyricsBlur = 0.3;
     CAGradientLayer *_fillMask;
     NSArray<CALayer *> *_fillBlurLayers;
     NSArray<CAGradientLayer *> *_fillBlurMasks;
+    CALayer *_pictureLayer;
+    CALayer *_pictureScrim;
     SGRFlowLayer *_flow;
     SGRFluidLayer *_fluidLayer;
     BOOL _watching;
@@ -146,6 +149,19 @@ static const CGFloat kLyricsBlur = 0.3;
     }
     _fillBlurLayers = blurLayers;
     _fillBlurMasks = blurMasks;
+
+    _pictureLayer = [CALayer layer];
+    _pictureLayer.actions = noActions();
+    _pictureLayer.contentsGravity = kCAGravityResizeAspectFill;
+    _pictureLayer.masksToBounds = YES;
+    _pictureLayer.hidden = YES;
+    [self.layer addSublayer:_pictureLayer];
+
+    _pictureScrim = [CALayer layer];
+    _pictureScrim.actions = noActions();
+    _pictureScrim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.32].CGColor;
+    _pictureScrim.hidden = YES;
+    [self.layer addSublayer:_pictureScrim];
     return self;
 }
 
@@ -194,6 +210,8 @@ static const CGFloat kLyricsBlur = 0.3;
     _fluidLayer.frame = painted;
     // The screen's part of it, so the copies turn about it and the shade ends at the screen's foot.
     _fluidLayer.visibleRect = CGRectMake(bleed.left, bleed.top, bounds.size.width, height);
+    _pictureLayer.frame = CGRectMake(0, 0, bounds.size.width, height);
+    _pictureScrim.frame = painted;
     [CATransaction commit];
 }
 
@@ -284,11 +302,52 @@ static const CGFloat kLyricsBlur = 0.3;
     if (fills == _fills) return;
     _fills = fills;
     if (fills) _fillBackground.backgroundColor = _color.CGColor;
-    _black.hidden = fills || _fluid || _flows;
-    _backdrop.hidden = fills || _fluid || _flows;
-    _fillBackground.hidden = !fills || _fluid || _flows;
-    _fill.hidden = !fills || _fluid || _flows || !_image.CGImage;
+    _black.hidden = fills || _fluid || _flows || _solidBlack || _picture != nil;
+    _backdrop.hidden = fills || _fluid || _flows || _solidBlack || _picture != nil;
+    _fillBackground.hidden = !fills || _fluid || _flows || _solidBlack || _picture != nil;
+    _fill.hidden = !fills || _fluid || _flows || _solidBlack || _picture != nil || !_image.CGImage;
     [self applyLyricsBlurAnimated:NO];
+}
+
+- (BOOL)black {
+    return _solidBlack;
+}
+
+- (void)setBlack:(BOOL)black {
+    if (black == _solidBlack) return;
+    _solidBlack = black;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    _solid.backgroundColor = (black ? UIColor.blackColor : _color).CGColor;
+    _black.hidden = black || _picture != nil || _fills || _fluid || _flows;
+    _backdrop.hidden = black || _picture != nil || _fills || _fluid || _flows;
+    _fillBackground.hidden = black || _picture != nil || !_fills || _fluid || _flows;
+    _fill.hidden = black || _picture != nil || !_fills || _fluid || _flows || !_image.CGImage;
+    if (_flow) _flow.hidden = black || _picture != nil || !_flows;
+    if (_fluidLayer) _fluidLayer.hidden = black || _picture != nil || !_fluid || _covered;
+    _pictureLayer.hidden = black || _picture == nil;
+    _pictureScrim.hidden = black || _picture == nil;
+    [CATransaction commit];
+    [self updateMotion];
+}
+
+- (void)setPicture:(UIImage *)picture {
+    if (picture == _picture) return;
+    _picture = picture;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    _pictureLayer.contents = (__bridge id)picture.CGImage;
+    BOOL show = picture.CGImage != nil && !_solidBlack;
+    _pictureLayer.hidden = !show;
+    _pictureScrim.hidden = !show;
+    _black.hidden = show || _solidBlack || _fills || _fluid || _flows;
+    _backdrop.hidden = show || _solidBlack || _fills || _fluid || _flows;
+    _fillBackground.hidden = show || _solidBlack || !_fills || _fluid || _flows;
+    _fill.hidden = show || _solidBlack || !_fills || _fluid || _flows || !_image.CGImage;
+    if (_flow) _flow.hidden = show || _solidBlack || !_flows;
+    if (_fluidLayer) _fluidLayer.hidden = show || _solidBlack || !_fluid || _covered;
+    [CATransaction commit];
+    [self updateMotion];
 }
 
 - (void)setBackdropOpacity:(CGFloat)opacity {
@@ -365,6 +424,7 @@ static const CGFloat kLyricsBlur = 0.3;
     CALayer *shown = _solid.presentationLayer ?: _solid;
     id from = (__bridge id)shown.backgroundColor;
     _color = color;
+    if (_solidBlack) return;
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     _solid.backgroundColor = color.CGColor;
@@ -428,6 +488,11 @@ static const CGFloat kLyricsBlur = 0.3;
 
 - (void)applyPalette:(SGRPalette *)palette animated:(BOOL)animated {
     _read = YES;
+    if (_solidBlack || _picture) {
+        [self applyColor:_preferred ?: palette.fieldColor animated:NO];
+        [self didColor];
+        return;
+    }
     if (_flows && palette.flowColors) {
         [_flow setColors:palette.flowColors animated:animated && !_flow.hidden];
         _flow.hidden = NO;

@@ -3,12 +3,16 @@
 #import <stdatomic.h>
 #import "Core/SGCore.h"
 #import "Shared/Audio/SGAudioPipeline.h"
+#import "Shared/AudioEffects/AudioEffects.h"
+#import "Shared/Player/PlayerState.h"
 #import "Headers/SPTPlayer.h"
+#import "Headers/SPTNowPlayingPlaybackController.h"
 #import "SpeedPitch.h"
 #import "SGTimePitch.h"
 
 // The unit stays in this long after speed and pitch both came back to normal.
 static const double kOffAfter = 1.5;
+static const double kPauseFadeSeconds = 0.24, kResumeFadeSeconds = 0.26;
 
 #pragma mark - shared between the threads
 
@@ -16,6 +20,11 @@ static float sg_speed = 1, sg_semitones;     // main thread
 static BOOL sg_follows;                      // main thread, pitch follows speed as stored
 static atomic_uint sg_speedBits;             // sg_speed for SPTPlayerState, read on any thread
 static atomic_uint sg_gainBits;              // the output gain, 1 when normal, for the sleep timer's fade
+static atomic_uint sg_envCurrentBits;        // pause/resume fade envelope (0...1)
+static atomic_uint sg_envTargetBits;
+static atomic_uint sg_envStepBits;
+static BOOL sg_pauseFading, sg_pauseBypass, sg_wasPaused;
+static NSUInteger sg_pauseGen;
 
 static _Atomic(SGTimePitch *) sg_pull, sg_varispeed, sg_inPlace, sg_chain;
 static atomic_bool sg_engaged, sg_busy;
@@ -132,10 +141,26 @@ static void shiftInPlace(SGTimePitch *unit, AudioUnitRenderActionFlags *flags, U
     *flags &= ~kAudioUnitRenderAction_OutputIsSilence;
 }
 
-// Scales the finished output in place, so the sleep timer's fade reaches every output format.
+// Scales the finished output in place, so the sleep timer's fade and pause/resume fades reach every output format.
+static void startEnvelopeRamp(float from, float to, double seconds) {
+    double rate = 48000.0;
+    uint64_t rateBits = atomic_load(&sg_hardware.rateBits);
+    if (rateBits) memcpy(&rate, &rateBits, sizeof rate);
+    if (rate < 8000.0) rate = 48000.0;
+    float current = from >= 0.0f ? from : loadFloat(&sg_envCurrentBits);
+    storeFloat(&sg_envCurrentBits, current);
+    storeFloat(&sg_envTargetBits, to);
+    float frames = (float)fmax(1.0, seconds * rate);
+    storeFloat(&sg_envStepBits, fabsf(to - current) / frames);
+}
+
 static void scaleInPlace(UInt32 frames, AudioBufferList *data) {
-    float gain = loadFloat(&sg_gainBits);
-    if (gain == 1 || gain < 0) return;
+    float sleepGain = loadFloat(&sg_gainBits);
+    if (sleepGain < 0) sleepGain = 1;
+    float env = loadFloat(&sg_envCurrentBits);
+    float target = loadFloat(&sg_envTargetBits);
+    float step = loadFloat(&sg_envStepBits);
+    if (sleepGain == 1 && env == 1 && target == 1) return;
     UInt32 formatFlags = atomic_load_explicit(&sg_hardware.flags, memory_order_relaxed);
     UInt32 bytes = atomic_load_explicit(&sg_hardware.bytes, memory_order_relaxed);
     UInt32 channels = atomic_load_explicit(&sg_hardware.channels, memory_order_relaxed);
@@ -147,16 +172,24 @@ static void scaleInPlace(UInt32 frames, AudioBufferList *data) {
     for (UInt32 b = 0; b < data->mNumberBuffers; b++) {
         if (!data->mBuffers[b].mData || data->mBuffers[b].mDataByteSize < frames * bytes * (split ? 1 : channels)) return;
     }
-    for (UInt32 b = 0; b < data->mNumberBuffers; b++) {
-        void *target = data->mBuffers[b].mData;
-        UInt32 lanes = split ? 1 : channels;
-        for (UInt32 c = 0; c < lanes; c++) {
-            for (UInt32 i = 0; i < frames; i++) {
+    for (UInt32 i = 0; i < frames; i++) {
+        if (env != target) {
+            if (step <= 0) env = target;
+            else if (env < target) env = fminf(target, env + step);
+            else env = fmaxf(target, env - step);
+        }
+        float shaped = (env >= 0.999f) ? 1.0f : (env <= 0.001f) ? 0.0f : (0.5f - 0.5f * cosf(env * (float)M_PI));
+        float gain = sleepGain * shaped;
+        for (UInt32 b = 0; b < data->mNumberBuffers; b++) {
+            void *outBuf = data->mBuffers[b].mData;
+            UInt32 lanes = split ? 1 : channels;
+            for (UInt32 c = 0; c < lanes; c++) {
                 UInt32 index = split ? i : i * channels + c;
-                writeSample(target, index, readSample(target, index, bytes, isFloat, fraction) * gain, bytes, isFloat, fraction);
+                writeSample(outBuf, index, readSample(outBuf, index, bytes, isFloat, fraction) * gain, bytes, isFloat, fraction);
             }
         }
     }
+    storeFloat(&sg_envCurrentBits, env);
 }
 
 static OSStatus rendered(void *refCon, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *timestamp, UInt32 bus,
@@ -207,7 +240,14 @@ static void apply(void);
 static void prepareOutput(AudioUnit unit) {
     atomic_store(&sg_engaged, false);
     readFormat(unit);
+    if (SGPlayerFadeOnPause() && (sg_wasPaused || loadFloat(&sg_envCurrentBits) < 0.5f)) {
+        startEnvelopeRamp(0.0f, 1.0f, kResumeFadeSeconds);
+    } else {
+        storeFloat(&sg_envCurrentBits, 1.0f);
+        storeFloat(&sg_envTargetBits, 1.0f);
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
+        sg_wasPaused = NO;
         if (sg_speed != 1 || sg_semitones != 0) apply();
     });
 }
@@ -358,7 +398,198 @@ void SGSetPlayerPitchFollowsSpeed(BOOL follows) {
     // The pitch slider goes while pitch follows, so what it had set goes with it.
     if (follows) sg_semitones = 0;
     apply();
+    SGPlayerSaveSongSpeedPitchIfKept();
 }
+
+BOOL SGPlayerFadeOnPause(void) {
+    return SGEnabled(SGKeyFadeOnPause);
+}
+
+void SGSetPlayerFadeOnPause(BOOL on) {
+    SGSetEnabled(SGKeyFadeOnPause, on);
+    if (!on) {
+        sg_pauseGen++;
+        sg_pauseFading = NO;
+        storeFloat(&sg_envCurrentBits, 1.0f);
+        storeFloat(&sg_envTargetBits, 1.0f);
+        storeFloat(&sg_envStepBits, 0.0f);
+    }
+}
+
+static void cancelPendingPauseFade(void) {
+    sg_pauseGen++;
+    if (sg_pauseFading || loadFloat(&sg_envTargetBits) < 1.0f) {
+        sg_pauseFading = NO;
+        if (SGPlayerFadeOnPause()) startEnvelopeRamp(-1.0f, 1.0f, kResumeFadeSeconds);
+        else {
+            storeFloat(&sg_envCurrentBits, 1.0f);
+            storeFloat(&sg_envTargetBits, 1.0f);
+        }
+    }
+}
+
+static BOOL schedulePauseWithFade(void (^performPause)(void)) {
+    if (!SGPlayerFadeOnPause() || sg_pauseBypass || SGPlayerState().isPaused || loadFloat(&sg_gainBits) < 0.05f) {
+        return NO;
+    }
+    if (sg_pauseFading) return YES;
+    sg_pauseFading = YES;
+    NSUInteger gen = ++sg_pauseGen;
+    startEnvelopeRamp(-1.0f, 0.0f, kPauseFadeSeconds);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kPauseFadeSeconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (gen != sg_pauseGen || !sg_pauseFading) return;
+        sg_pauseFading = NO;
+        sg_pauseBypass = YES;
+        sg_wasPaused = YES;
+        if (performPause) performPause();
+        sg_pauseBypass = NO;
+    });
+    return YES;
+}
+
+static NSString *currentSongURI(void) {
+    return SGURIString(SGPlayerState().track.URI);
+}
+
+static NSDictionary<NSString *, NSDictionary *> *savedSongsDict(void) {
+    NSDictionary *dict = [NSUserDefaults.standardUserDefaults dictionaryForKey:SGKeySpeedPitchSongs];
+    return [dict isKindOfClass:NSDictionary.class] ? dict : @{};
+}
+
+BOOL SGPlayerKeepForCurrentSong(void) {
+    NSString *uri = currentSongURI();
+    return uri.length && [savedSongsDict()[uri] isKindOfClass:NSDictionary.class];
+}
+
+void SGPlayerSaveSongSpeedPitchIfKept(void) {
+    NSString *uri = currentSongURI();
+    if (!uri.length || !SGPlayerKeepForCurrentSong()) return;
+    NSMutableDictionary *all = [savedSongsDict() mutableCopy];
+    all[uri] = @{
+        @"speed": @(sg_speed),
+        @"pitch": @(sg_semitones),
+        @"follows": @(sg_follows),
+        @"reverb": @(SGDSPNumber(SGKeyDSPReverbAmount)),
+    };
+    [NSUserDefaults.standardUserDefaults setObject:all forKey:SGKeySpeedPitchSongs];
+}
+
+void SGSetPlayerKeepForCurrentSong(BOOL keep) {
+    NSString *uri = currentSongURI();
+    if (!uri.length) return;
+    NSMutableDictionary *all = [savedSongsDict() mutableCopy];
+    if (keep) {
+        all[uri] = @{
+            @"speed": @(sg_speed),
+            @"pitch": @(sg_semitones),
+            @"follows": @(sg_follows),
+            @"reverb": @(SGDSPNumber(SGKeyDSPReverbAmount)),
+        };
+    } else {
+        [all removeObjectForKey:uri];
+    }
+    [NSUserDefaults.standardUserDefaults setObject:all forKey:SGKeySpeedPitchSongs];
+}
+
+@interface SGSpeedPitchSongWatcher : NSObject <SGPlayerStateObserver>
+@end
+
+@implementation SGSpeedPitchSongWatcher {
+    NSString *_lastURI;
+    BOOL _lastWasKept;
+    BOOL _lastPaused;
+}
+- (void)playerStateDidChange:(SPTPlayerState *)state {
+    if (state.isPaused != _lastPaused) {
+        _lastPaused = state.isPaused;
+        if (state.isPaused) {
+            sg_wasPaused = YES;
+        } else {
+            cancelPendingPauseFade();
+            if (SGPlayerFadeOnPause() && sg_wasPaused) {
+                startEnvelopeRamp(0.0f, 1.0f, kResumeFadeSeconds);
+            }
+            sg_wasPaused = NO;
+        }
+    }
+    NSString *uri = SGURIString(state.track.URI);
+    if (!uri.length || [uri isEqualToString:_lastURI]) return;
+    _lastURI = [uri copy];
+    NSDictionary *entry = savedSongsDict()[uri];
+    if ([entry isKindOfClass:NSDictionary.class]) {
+        _lastWasKept = YES;
+        BOOL fol = [entry[@"follows"] boolValue];
+        SGSetPlayerPitchFollowsSpeed(fol);
+        SGSetPlayerSpeed(entry[@"speed"] ? [entry[@"speed"] doubleValue] : 1.0);
+        if (!fol) SGSetPlayerPitch([entry[@"pitch"] floatValue]);
+        if (entry[@"reverb"]) SGDSPSetReverbAmount([entry[@"reverb"] doubleValue]);
+        [NSNotificationCenter.defaultCenter postNotificationName:SGSpeedPitchChangedNotification object:nil];
+    } else if (_lastWasKept) {
+        _lastWasKept = NO;
+        SGSetPlayerSpeed(1.0);
+        SGSetPlayerPitch(0.0f);
+        SGDSPSetReverbAmount(0.0);
+        [NSNotificationCenter.defaultCenter postNotificationName:SGSpeedPitchChangedNotification object:nil];
+    }
+}
+@end
+
+static SGSpeedPitchSongWatcher *sg_songWatcher;
+
+#pragma mark - pause & resume fade hooks
+
+@interface NSObject (SGFadePlayButton)
+- (void)uiButtonTapped;
+@end
+
+%hook _TtC28EncoreConsumerMobile_BaseKit14PlayButtonView
+- (void)uiButtonTapped {
+    if (SGPlayerFadeOnPause() && !sg_pauseBypass) {
+        if (sg_pauseFading) {
+            cancelPendingPauseFade();
+            return;
+        }
+        SPTPlayerState *state = SGPlayerState();
+        if (state && !state.isPaused && state.isPlaying) {
+            __weak id weakSelf = self;
+            if (schedulePauseWithFade(^{
+                id strongSelf = weakSelf;
+                if ([strongSelf respondsToSelector:@selector(uiButtonTapped)]) {
+                    [(id)strongSelf uiButtonTapped];
+                }
+            })) return;
+        }
+    }
+    %orig;
+}
+%end
+
+%hook SPTNowPlayingPlaybackControllerImplementation
+- (void)setPaused:(BOOL)paused {
+    if (!paused) {
+        cancelPendingPauseFade();
+        if (SGPlayerFadeOnPause()) startEnvelopeRamp(0.0f, 1.0f, kResumeFadeSeconds);
+        %orig;
+        return;
+    }
+    __weak SPTNowPlayingPlaybackControllerImplementation *weakSelf = self;
+    if (schedulePauseWithFade(^{ [weakSelf setPaused:YES]; })) return;
+    %orig;
+}
+%end
+
+%hook SPTEsperantoPlayer
+- (id)pause:(id)options {
+    __weak id<SPTPlayer> weakSelf = (id<SPTPlayer>)self;
+    if (schedulePauseWithFade(^{ [weakSelf pause:options]; })) return nil;
+    return %orig;
+}
+- (id)resume:(id)options {
+    cancelPendingPauseFade();
+    if (SGPlayerFadeOnPause()) startEnvelopeRamp(0.0f, 1.0f, kResumeFadeSeconds);
+    return %orig;
+}
+%end
 
 #pragma mark - Spotify's clock
 
@@ -373,10 +604,22 @@ void SGSetPlayerPitchFollowsSpeed(BOOL follows) {
 %ctor {
     storeFloat(&sg_speedBits, 1);
     storeFloat(&sg_gainBits, 1);
+    storeFloat(&sg_envCurrentBits, 1);
+    storeFloat(&sg_envTargetBits, 1);
+    storeFloat(&sg_envStepBits, 0);
     sg_follows = SGFlag(SGKeyPitchFollowsSpeed, NO);
     static const SGAudioProcessor processor = {prepareOutput, rendered};
     SGAudioPipelineRegister(SGAudioStageSpeedPitch, &processor);
     SGAudioPipelineSetPullProcessor(processPull);
     %init;
-    SGRequireClasses(@[@"SPTPlayerState"]);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        sg_songWatcher = [SGSpeedPitchSongWatcher new];
+        SGAddPlayerStateObserver(sg_songWatcher);
+    });
+    SGRequireClasses(@[
+        @"SPTPlayerState",
+        @"SPTEsperantoPlayer",
+        @"SPTNowPlayingPlaybackControllerImplementation",
+        @"_TtC28EncoreConsumerMobile_BaseKit14PlayButtonView",
+    ]);
 }

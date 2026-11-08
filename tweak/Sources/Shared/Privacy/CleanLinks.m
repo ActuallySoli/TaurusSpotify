@@ -19,6 +19,8 @@ NSURL *SGCleanLinkURL(NSURL *url) {
     // The host checked before it is compared: a nil one would compare as the same.
     if (![url isKindOfClass:NSURL.class] || !url.host || [url.host caseInsensitiveCompare:kHost] != NSOrderedSame) return url;
     NSURLComponents *parts = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+    NSArray *path = [parts.path componentsSeparatedByString:@"/"];
+    if ([path containsObject:@"socialsession"]) return url;
     // The encoded items, so what is kept goes back byte for byte as it came.
     NSArray<NSURLQueryItem *> *items = parts.percentEncodedQueryItems;
     if (!items.count) return url;

@@ -10,7 +10,8 @@ import subprocess
 import tempfile
 from functools import cache
 from pathlib import Path
-from patch_native_restrictions import layout,branch,UUID
+from patch_native_restrictions import layout,branch,UUID,verify_padding
+from native_profiles import SPOTIFY_9190, conditional_header, profile_for_uuid
 from patch_key_request_mode import DLSYM_STUB,_verify_dlsym_binding
 
 SYMBOL=b'SAPTraceNativeBoundary\0'
@@ -19,6 +20,14 @@ POINTS=[
     ('Success',0x106231e70,0x100023900,bytes.fromhex('ff4301d1f44f03a9fd7b04a9fd030191'),1),
     ('Failure',0x100893730,0x100023b00,bytes.fromhex('ff4301d1f44f03a9fd7b04a9fd030191'),2),
 ]
+
+def points_for(profile):
+    prologue = bytes.fromhex('ff4301d1f44f03a9fd7b04a9fd030191')
+    return [
+        ('Request', profile.request, profile.trace_caves[0], bytes.fromhex('02008052'), 0),
+        ('Success', profile.success, profile.trace_caves[1], prologue, 1),
+        ('Failure', profile.failure, profile.trace_caves[2], prologue, 2),
+    ]
 
 @cache
 def template(kind):
@@ -82,14 +91,14 @@ Lname:
         cursor+=size
     raise ValueError('Trace template missing')
 
-def trampoline(point):
+def trampoline(point,profile=SPOTIFY_9190):
     name,address,cave,expected,kind=point;out=bytearray(template(kind));symbol=out.index(SYMBOL)
     words=[struct.unpack_from('<I',out,i)[0] for i in range(0,symbol,4)]
     adrp=words.index(0x90000010)*4
-    delta=(DLSYM_STUB>>12)-((cave+adrp)>>12)
+    delta=(profile.dlsym>>12)-((cave+adrp)>>12)
     if not -(1<<20)<=delta<(1<<20):raise ValueError('Trace dlsym out of range')
     struct.pack_into('<I',out,adrp,0x90000010|((delta&3)<<29)|(((delta>>2)&0x7ffff)<<5))
-    struct.pack_into('<I',out,adrp+4,0x91000210|((DLSYM_STUB&0xfff)<<10))
+    struct.pack_into('<I',out,adrp+4,0x91000210|((profile.dlsym&0xfff)<<10))
     # Insert the original callback prologue before its final branch. ADR's
     # target follows it, so its immediate must be adjusted by the inserted size.
     final=(len(words)-1)*4
@@ -106,25 +115,27 @@ def trampoline(point):
 
 def patch(data):
     end,first,segments,uuid=layout(data)
-    if uuid!=UUID:raise ValueError('Unsupported trace executable UUID')
-    _verify_dlsym_binding(data);out=bytearray(data);reports=[]
+    profile=profile_for_uuid(uuid)
+    _verify_dlsym_binding(data,profile);out=bytearray(data);reports=[]
     text=next(s for s in segments if s[0]==b'__TEXT');_,vm,_,fo,size,protection=text
     def off(address,length):
         if not vm<=address or address+length>vm+size:raise ValueError('Trace outside executable text')
         return fo+address-vm
-    for point in POINTS:
-        name,address,cave,expected,kind=point;code=trampoline(point);target=off(cave,len(code));source=off(address,len(expected))
-        if protection&5!=5 or target<end or target+len(code)>first or any(data[target:target+len(code)]):raise ValueError('Trace padding is occupied or unavailable')
+    for point in points_for(profile):
+        name,address,cave,expected,kind=point;code=trampoline(point,profile);target=off(cave,len(code));source=off(address,len(expected))
+        verify_padding(data,target,len(code))
         if data[source:source+len(expected)]!=expected:raise ValueError(f'Trace {name} prologue differs')
         if kind==0 and data[source+4:source+8]!=bytes.fromhex('20013fd6'):raise ValueError('Native key call target instruction differs')
         out[target:target+len(code)]=code;struct.pack_into('<I',out,source,branch(address,cave))
         reports.append({'boundary':name,'address':hex(address),'cave':hex(cave),'bytes':len(code),'preserves_native_callback_ownership':True})
-    return bytes(out),{'uuid':UUID.hex(),'fixed_request_mode':0,'helper':SYMBOL[:-1].decode(),'boundaries':reports,'key_material_read':False}
+    return bytes(out),{'uuid':profile.uuid.hex(),'fixed_request_mode':0,'helper':SYMBOL[:-1].decode(),'boundaries':reports,'key_material_read':False}
 
-def header():
-    lines=['// Generated guarded native observation boundaries for Spotify 9.1.90.','#pragma once','#include <stdint.h>']
-    for point in POINTS:
-        name,address,cave,expected,kind=point;stub=trampoline(point)
+def header(profile=None):
+    if profile is None:
+        return conditional_header(header)
+    lines=[f'// Generated guarded native observation boundaries for Spotify {profile.version}.','#pragma once','#include <stdint.h>']
+    for point in points_for(profile):
+        name,address,cave,expected,kind=point;stub=trampoline(point,profile)
         values=lambda b:','.join(f'0x{x:02x}' for x in b)
         lines += [f'static const uintptr_t SAPTrace{name}Offset=0x{address-0x100000000:x};',
                   f'static const uintptr_t SAPTrace{name}CaveOffset=0x{cave-0x100000000:x};',

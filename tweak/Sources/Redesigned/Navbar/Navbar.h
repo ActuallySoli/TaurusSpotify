@@ -33,6 +33,9 @@ void SGRLogTabBarRow(UIView *tabBar);
 void SGRRefreshTabBar(void);
 void SGRSetTabBarGradientVisible(BOOL visible);
 void SGRNavbarSetProfilePhotoVisible(UIView *face);
+UIView *SGRNavbarProfilePhotoIn(UIView *header);
+void SGRNavbarPlaceProfilePhoto(UIView *face, UIView *header, CGFloat inset);
+void SGRNavbarRefreshProfilePhotos(void);
 NSString *SGRNavbarDefaultIcon(NSString *stockID);
 BOOL SGRNavbarEntryHasCustomIcon(NSDictionary *entry);
 

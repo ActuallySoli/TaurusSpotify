@@ -25,13 +25,24 @@ static BOOL isKept(UIView *content) {
     for (NSString *identifier in @[@"Album.ConsumptionExperience", @"Album.Copyright"]) {
         kept = kept ?: SGRFindByIdentifier(content, identifier, NULL);
     }
-    if (!kept) return NO;
-    SGForEachView(kept, ^(UIView *v) {
-        if (![v isKindOfClass:UILabel.class]) return;
-        UILabel *label = (UILabel *)v;
-        if (![label.textColor isEqual:SGRTertiary()]) label.textColor = SGRTertiary();
-    });
-    return YES;
+    if (kept) {
+        SGForEachView(kept, ^(UIView *v) {
+            if (![v isKindOfClass:UILabel.class]) return;
+            UILabel *label = (UILabel *)v;
+            if (![label.textColor isEqual:SGRTertiary()]) label.textColor = SGRTertiary();
+        });
+        return YES;
+    }
+    if (!SGHidden(SGRKeyAlbumHideMoreBy) && SGRFindByIdentifier(content, @"Components.UI.ContentCardAlbum", NULL)) return YES;
+    if (!SGHidden(SGRKeyAlbumHideVideos) && SGRFindByIdentifier(content, @"Components.UI.PreviewCardHeading", NULL)) return YES;
+    if (!SGHidden(SGRKeyAlbumHideConcerts) && SGRFindByIdentifier(content, @"TourCardCarousel", NULL)) return YES;
+    if (!SGHidden(SGRKeyAlbumHideMerch) && SGRFindByIdentifier(content, @"Merch.UI.MerchCard", NULL)) return YES;
+    if (!SGHidden(SGRKeyAlbumHideYouMightLike) && SGRFindByIdentifier(content, @"Components.UI.HomeCard", NULL)) return YES;
+    BOOL anyShown = !SGHidden(SGRKeyAlbumHideMoreBy) || !SGHidden(SGRKeyAlbumHideVideos)
+                 || !SGHidden(SGRKeyAlbumHideConcerts) || !SGHidden(SGRKeyAlbumHideMerch)
+                 || !SGHidden(SGRKeyAlbumHideYouMightLike);
+    if (anyShown && SGRFindByIdentifier(content, @"Components.UI.SectionHeadingHome", NULL)) return YES;
+    return NO;
 }
 
 static void settle(UICollectionViewCell *cell, CGFloat natural, CGFloat lead) {
@@ -88,6 +99,7 @@ static void logOnce(NSString *what) {
     CGFloat natural = MAX(1, result.size.height);
     if (isKept(content)) {
         settle(cell, natural, kLead);
+        SGRClearCellPaint(cell);
         result.size = CGSizeMake(result.size.width, natural + kLead);
         logOnce(@"the album's own line and its copyright kept under the tracks");
     } else {

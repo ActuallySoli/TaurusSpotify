@@ -9,6 +9,9 @@ typedef NS_ENUM(NSInteger, SGRArtistCell) {
     SGRArtistCellSpacer,
     SGRArtistCellHeading,
     SGRArtistCellVideos,
+    SGRArtistCellPick,
+    SGRArtistCellCountdown,
+    SGRArtistCellAbout,
 };
 
 static SGRArtistCell kindOf(UIView *content, CGFloat height) {
@@ -19,6 +22,9 @@ static SGRArtistCell kindOf(UIView *content, CGFloat height) {
         if ([identifier isEqualToString:@"Components.UI.MusicVideoShelfHeader"] ||
             [identifier isEqualToString:@"Music-Videos.Video-Card-Carousel"] ||
             [identifier isEqualToString:@"WatchFeedCarouselEntryPointElement"]) kind = SGRArtistCellVideos;
+        else if ([identifier isEqualToString:@"Components.UI.PinnedItemUI"]) kind = SGRArtistCellPick;
+        else if ([identifier isEqualToString:@"Components.UI.UpcomingReleaseRow"]) kind = SGRArtistCellCountdown;
+        else if ([identifier isEqualToString:@"Components.UI.CreatorBiographyCard"]) kind = SGRArtistCellAbout;
         else if ([identifier isEqualToString:@"Components.UI.SectionHeadingHome"]) kind = SGRArtistCellHeading;
     });
     if (kind == SGRArtistCellOther && height <= 16.5 && content.subviews.count <= 1) {
@@ -27,6 +33,16 @@ static SGRArtistCell kindOf(UIView *content, CGFloat height) {
         if (empty) kind = SGRArtistCellSpacer;
     }
     return kind;
+}
+
+static BOOL shouldDropKind(SGRArtistCell kind) {
+    switch (kind) {
+        case SGRArtistCellVideos: return SGHidden(SGRKeyArtistHideVideos);
+        case SGRArtistCellPick: return SGHidden(SGRKeyArtistHidePick);
+        case SGRArtistCellCountdown: return SGHidden(SGRKeyArtistHideCountdown);
+        case SGRArtistCellAbout: return SGHidden(SGRKeyArtistHideAbout);
+        default: return NO;
+    }
 }
 
 static NSMutableDictionary<NSIndexPath *, NSNumber *> *kindsOf(UICollectionView *list) {
@@ -142,8 +158,9 @@ static void logOnce(NSString *what) {
     SGRArtistCell kind = kindOf(content, result.size.height);
     kindsOf(list)[path] = @(kind);
 
-    BOOL drop = kind == SGRArtistCellVideos || [droppedOf(list) containsObject:path];
-    if (kind == SGRArtistCellVideos) {
+    BOOL dropKind = shouldDropKind(kind);
+    BOOL drop = dropKind || [droppedOf(list) containsObject:path];
+    if (dropKind) {
         [droppedOf(list) addObject:path];
         dropHeadingOf(list, path);
     }

@@ -465,6 +465,140 @@ void SGMotionArtistLogo(NSString *artist, CGFloat pixels, void (^done)(UIImage *
     });
 }
 
+#pragma mark - album notes & artist artwork
+
+static NSString *cleanEditorialHTML(NSString *html) {
+    if (![html isKindOfClass:NSString.class] || !html.length) return nil;
+    NSString *s = [html stringByReplacingOccurrencesOfString:@"<br\\s*/?>" withString:@"\n" options:NSRegularExpressionSearch range:NSMakeRange(0, html.length)];
+    s = [s stringByReplacingOccurrencesOfString:@"</p>" withString:@"\n\n" options:NSCaseInsensitiveSearch range:NSMakeRange(0, s.length)];
+    s = [s stringByReplacingOccurrencesOfString:@"<[^>]+>" withString:@"" options:NSRegularExpressionSearch range:NSMakeRange(0, s.length)];
+    NSDictionary<NSString *, NSString *> *entities = @{
+        @"&amp;": @"&", @"&quot;": @"\"", @"&#39;": @"'", @"&apos;": @"'",
+        @"&lt;": @"<", @"&gt;": @">", @"&nbsp;": @" "
+    };
+    NSMutableString *mutableText = [s mutableCopy];
+    for (NSString *entity in entities) {
+        [mutableText replaceOccurrencesOfString:entity withString:entities[entity] options:0 range:NSMakeRange(0, mutableText.length)];
+    }
+    NSString *collapsed = [mutableText stringByReplacingOccurrencesOfString:@"\\n{3,}" withString:@"\n\n" options:NSRegularExpressionSearch range:NSMakeRange(0, mutableText.length)];
+    NSString *trimmed = [collapsed stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return trimmed.length ? trimmed : nil;
+}
+
+void SGMotionAlbumNotes(NSString *artist, NSString *album, void (^done)(NSString *notes)) {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ SGMotionAlbumNotes(artist, album, done); });
+        return;
+    }
+    NSString *artistKey = SGMotionNameKey(artist), *albumKey = SGMotionNameKey(album);
+    if (!artistKey.length || !albumKey.length) {
+        done(nil);
+        return;
+    }
+    NSString *key = [NSString stringWithFormat:@"notes\n%@\n%@", artistKey, albumKey];
+    lookUp(key, ^(NSString *notes) { done(notes); }, ^(void (^answer)(id, BOOL)) {
+        NSString *term = [NSString stringWithFormat:@"%@ %@", artist, SGMotionSearchName(album)];
+        search(@"albums", term, @"editorialNotes", YES, ^(NSArray *found, BOOL answered) {
+            if (!answered) {
+                answer(nil, NO);
+                return;
+            }
+            NSString *notes = nil, *exact = plain(album);
+            for (int pass = 0; pass < 2 && !notes; pass++) {
+                for (id result in found) {
+                    id attributes = dig(result, @"attributes");
+                    if (!sameArtist(artistKey, SGMotionNameKey(dig(attributes, @"artistName")))) continue;
+                    id name = dig(attributes, @"name");
+                    if (pass == 0 ? ![name isKindOfClass:NSString.class] || ![plain(name) isEqualToString:exact]
+                                  : ![SGMotionNameKey(name) isEqualToString:albumKey]) continue;
+                    NSString *raw = dig(attributes, @"editorialNotes/standard") ?: dig(attributes, @"editorialNotes/short");
+                    notes = cleanEditorialHTML(raw);
+                    if (notes) break;
+                }
+            }
+            answer(notes, YES);
+        });
+    });
+}
+
+static NSURL *artistPhotoURL(id attributes, CGFloat pixels) {
+    NSArray<NSString *> *paths = @[
+        @"editorialArtwork/centeredFullscreenBackground",
+        @"editorialArtwork/subscriptionHero",
+        @"editorialArtwork/bannerUber",
+        @"artwork"
+    ];
+    for (NSString *path in paths) {
+        id art = dig(attributes, path);
+        id url = dig(art, @"url"), width = dig(art, @"width"), height = dig(art, @"height");
+        if (![url isKindOfClass:NSString.class] || ![width isKindOfClass:NSNumber.class] || ![height isKindOfClass:NSNumber.class]) continue;
+        if ([width doubleValue] <= 0 || [height doubleValue] <= 0) continue;
+        long w = MAX(1, lround(pixels)), h = MAX(1, lround(pixels * [height doubleValue] / [width doubleValue]));
+        NSString *filled = [[[url stringByReplacingOccurrencesOfString:@"{w}" withString:@(w).stringValue]
+                             stringByReplacingOccurrencesOfString:@"{h}" withString:@(h).stringValue]
+                            stringByReplacingOccurrencesOfString:@"{f}" withString:@"jpg"];
+        NSURL *made = [NSURL URLWithString:filled];
+        if (made) return made;
+    }
+    return nil;
+}
+
+static NSString *artistVideoPlaylist(id editorialVideo) {
+    for (NSString *name in @[@"motionArtistFullscreen16x9", @"motionArtistWide16x9", @"motionDetailTall", @"motionTallVideo3x4", @"motionSquareVideo1x1", @"motionDetailSquare"]) {
+        id video = dig(editorialVideo, [name stringByAppendingString:@"/video"]);
+        if ([video isKindOfClass:NSString.class] && [video length]) return video;
+    }
+    return nil;
+}
+
+void SGMotionArtistArtwork(NSString *artist, BOOL wantPhoto, BOOL wantMotion, CGFloat pixels,
+                           void (^done)(UIImage *photo, NSURL *motionFile)) {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ SGMotionArtistArtwork(artist, wantPhoto, wantMotion, pixels, done); });
+        return;
+    }
+    NSString *artistKey = SGMotionNameKey(artist);
+    if (!artistKey.length || (!wantPhoto && !wantMotion)) {
+        done(nil, nil);
+        return;
+    }
+    NSString *key = [NSString stringWithFormat:@"artist-art\n%@", artistKey];
+    lookUp(key, ^(NSDictionary *info) {
+        NSURL *photoURL = [info isKindOfClass:NSDictionary.class] ? info[@"photo"] : nil;
+        NSURL *videoMaster = [info isKindOfClass:NSDictionary.class] ? info[@"video"] : nil;
+        if (wantPhoto && [photoURL isKindOfClass:NSURL.class]) {
+            fetch(requestFor(photoURL), ^id(NSData *data) { return [UIImage imageWithData:data]; }, ^(UIImage *image, NSInteger status) {
+                if (image) done(image, nil);
+            });
+        }
+        if (wantMotion && [videoMaster isKindOfClass:NSURL.class]) {
+            wholeFileOf(videoMaster, pixels, ^(NSURL *remote, BOOL keep) {
+                if (remote) SGMotionFile(remote, ^(NSURL *localFile) {
+                    if (localFile) done(nil, localFile);
+                });
+            });
+        }
+    }, ^(void (^answer)(id, BOOL)) {
+        search(@"artists", artist, @"editorialArtwork,editorialVideo", YES, ^(NSArray *found, BOOL answered) {
+            if (!answered) {
+                answer(nil, NO);
+                return;
+            }
+            NSMutableDictionary *result = [NSMutableDictionary dictionary];
+            for (id item in found) {
+                id attributes = dig(item, @"attributes");
+                if (![SGMotionNameKey(dig(attributes, @"name")) isEqualToString:artistKey]) continue;
+                NSURL *photo = artistPhotoURL(attributes, pixels);
+                if (photo) result[@"photo"] = photo;
+                NSString *video = artistVideoPlaylist(dig(attributes, @"editorialVideo"));
+                if (video && [NSURL URLWithString:video]) result[@"video"] = [NSURL URLWithString:video];
+                break;
+            }
+            answer(result.count ? result : nil, YES);
+        });
+    });
+}
+
 #pragma mark - recordings
 
 // The catalog's songs with this ISRC, for iOS's Music Haptics: the recording itself, not a search by name.

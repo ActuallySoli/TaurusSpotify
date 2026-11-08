@@ -154,13 +154,14 @@ static NSString *cellLabel(SGGestureAction action) {
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)table {
-    return 4;
+    return 6;
 }
 
 - (NSInteger)tableView:(UITableView *)table numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case 1: return (NSInteger)SGGestureSplitNames().count;
         case 2: return (NSInteger)SGGestureStepChoices().count;
+        case 5: return (NSInteger)SGGestureHoldSpeedChoices().count;
         default: return 1;
     }
 }
@@ -168,11 +169,12 @@ static NSString *cellLabel(SGGestureAction action) {
 - (UIView *)tableView:(UITableView *)table viewForHeaderInSection:(NSInteger)section {
     if (section == 1) return SGSectionHeader(table, @"Split");
     if (section == 2) return SGSectionHeader(table, @"Seek step");
+    if (section == 5) return SGSectionHeader(table, @"Hold speed");
     return nil;
 }
 
 - (CGFloat)tableView:(UITableView *)table heightForHeaderInSection:(NSInteger)section {
-    return section == 1 || section == 2 ? SGSectionHeaderHeight : SGSectionGap;
+    return section == 1 || section == 2 || section == 5 ? SGSectionHeaderHeight : SGSectionGap;
 }
 
 - (CGFloat)tableView:(UITableView *)table heightForFooterInSection:(NSInteger)section {
@@ -205,10 +207,31 @@ static NSString *cellLabel(SGGestureAction action) {
             }
             break;
         }
-        default:
+        case 3:
             SGFillCell(cell, @"Start over", nil, nil, @"arrow.uturn.backward");
             cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             break;
+        case 4: {
+            NSString *holdTitle = [NSString stringWithFormat:@"Hold edge for %g×", SGGestureHoldSpeed()];
+            SGFillCell(cell, holdTitle, @"Hold either side of the cover to play faster", nil, nil);
+            UISwitch *toggle = [UISwitch new];
+            toggle.onTintColor = SGGreen();
+            toggle.on = SGGestureHoldOn();
+            [toggle addTarget:self action:@selector(holdToggled:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = toggle;
+            break;
+        }
+        default: {
+            NSNumber *speed = SGGestureHoldSpeedChoices()[(NSUInteger)path.row];
+            SGFillCell(cell, [NSString stringWithFormat:@"%g×", speed.doubleValue], nil, nil, nil);
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            if (path.row == SGGestureHoldSpeedChoice()) {
+                UIImageView *tick = SGSymbolView(@"checkmark", 13, UIImageSymbolWeightSemibold, 16);
+                tick.tintColor = SGGreen();
+                cell.accessoryView = tick;
+            }
+            break;
+        }
     }
     return cell;
 }
@@ -218,12 +241,18 @@ static NSString *cellLabel(SGGestureAction action) {
     if (path.section == 1) SGSetInt(SGKeyGestureSplit, path.row);
     else if (path.section == 2) SGSetInt(SGKeyGestureStep, path.row);
     else if (path.section == 3) SGResetGestureZones();
+    else if (path.section == 5) SGSetInt(SGKeyGestureHoldSpeed, path.row);
     else return;
     [self refresh];
 }
 
 - (void)toggled:(UISwitch *)toggle {
     SGSetEnabled(SGKeyGestures, toggle.on);
+}
+
+- (void)holdToggled:(UISwitch *)toggle {
+    SGSetEnabled(SGKeyGestureHold, toggle.on);
+    [self refresh];
 }
 
 @end

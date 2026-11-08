@@ -9,6 +9,7 @@
 // thread only, one thread at a time: it allocates nothing and takes no lock. SGRSpectrumRead from any thread.
 // What it reads can mix two analyses, a band from each, which nothing drawn can show.
 #import <stdint.h>
+#import <Foundation/Foundation.h>
 
 enum { SGRSpectrumBands = 24 };
 // What a band reads with nothing in it, and the least SGRSpectrumRead hands out.
@@ -17,6 +18,12 @@ enum { SGRSpectrumBands = 24 };
 // Makes the FFT's tables. Repeat calls do nothing. Lives as long as the process: the render thread may be in
 // SGRSpectrumFeed at any time.
 void SGRSpectrumPrepare(void);
+// Registers the pipeline's spectrum stage (SGAudioStageSpectrum), which reads the finished output buffer on
+// the render thread and feeds SGRSpectrumFeed. Startup only, idempotent; the visualiser and shader call it
+// from their %ctor, since a stage cannot be added once output has started.
+void SGRSpectrumInstall(void);
+// Main thread: the pipeline analyzes only while at least one visible consumer reads it.
+void SGRSpectrumSetReading(id owner, BOOL reading);
 // Samples, mono, at `sampleRate`. A new rate starts the window over. Does nothing before SGRSpectrumPrepare.
 void SGRSpectrumFeed(const float *samples, uint32_t count, double sampleRate);
 // The last levels into `levels`, low band first; answers how many analyses there have been, so a caller can

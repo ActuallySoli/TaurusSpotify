@@ -59,6 +59,13 @@ static void applyRow(UIView *cell) {
     UIView *subtitle = identified(row, @"Track.Row.Content.Subtitle", &kSubtitleKey);
     SGForEachView(subtitle, ^(UIView *v) {
         if (![v isKindOfClass:UILabel.class]) return;
+        for (UIView *p = v; p && p != subtitle; p = p.superview) {
+            NSString *ident = p.accessibilityIdentifier;
+            if ([ident isEqualToString:@"Components.UI.ExplicitIcon"] ||
+                [ident isEqualToString:@"Podcast.Row.MarkAsPlayed.ExplicitIcon"] ||
+                [ident isEqualToString:@"Components.UI.19andOverIcon"] ||
+                [NSStringFromClass(p.class) hasSuffix:@"ExplicitBadge"]) return;
+        }
         UILabel *label = (UILabel *)v;
         if (![label.textColor isEqual:SGRSecondary()]) label.textColor = SGRSecondary();
     });

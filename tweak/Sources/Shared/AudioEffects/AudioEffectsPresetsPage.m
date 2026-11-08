@@ -3,6 +3,7 @@
 #import "Core/SGCore.h"
 #import "Settings/SGPage.h"
 #import "Settings/SGPageStyle.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "AudioEffectsPage.h"
 #import "AudioEffectsPresets.h"
 
@@ -19,6 +20,106 @@ static void tick(UITableViewCell *cell, BOOL on) {
         cell.accessoryView = tick;
     }
     cell.accessibilityTraits = on ? UIAccessibilityTraitButton | UIAccessibilityTraitSelected : UIAccessibilityTraitButton;
+}
+
+#pragma mark - sharing
+
+// A user preset into the share sheet the way Export settings hands its file over: one JSON file, only the
+// preset inside it.
+static void sharePreset(UIViewController *owner, NSString *name) {
+    NSDictionary *file = SGDSPPresetShareFile(name);
+    NSData *data = file ? [NSJSONSerialization dataWithJSONObject:file
+                                                          options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys
+                                                            error:nil] : nil;
+    if (!data) {
+        showAlert(owner, @"Preset not exported", @"This preset holds nothing that can be shared.");
+        return;
+    }
+    NSString *filename = [NSString stringWithFormat:@"taurus-preset-%@.json", NSUUID.UUID.UUIDString];
+    NSURL *url = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:filename]];
+    if (![data writeToURL:url atomically:YES]) {
+        showAlert(owner, @"Preset not exported", @"The file could not be written.");
+        return;
+    }
+    UIViewController *top = SGTopController();
+    if (!top || top.presentedViewController) return;
+    UIActivityViewController *sheet = [[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];
+    sheet.popoverPresentationController.sourceView = top.view;
+    sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(top.view.bounds), CGRectGetMidY(top.view.bounds), 1, 1);
+    sheet.completionWithItemsHandler = ^(UIActivityType activity, BOOL completed, NSArray *items, NSError *error) {
+        [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+    };
+    [top presentViewController:sheet animated:YES completion:nil];
+}
+
+// A picked file's preset kept under the file's own name, or under "Name (2)" when one of the user's has
+// that name: nothing of theirs is overwritten without it being the point. `kept` runs once with the name
+// the preset was left under.
+static void importPreset(UIViewController *owner, NSURL *url, void (^kept)(NSString *name)) {
+    NSDictionary *attributes = url.isFileURL ? [NSFileManager.defaultManager attributesOfItemAtPath:url.path error:nil] : nil;
+    if (![attributes[NSFileType] isEqual:NSFileTypeRegular] || [attributes[NSFileSize] unsignedLongLongValue] > 256 * 1024) {
+        showAlert(owner, @"Preset not imported", @"Choose a JSON preset file smaller than 256 KB.");
+        return;
+    }
+    NSFileHandle *reader = [NSFileHandle fileHandleForReadingFromURL:url error:nil];
+    NSData *data = [reader readDataUpToLength:256 * 1024 + 1 error:nil];
+    [reader closeAndReturnError:nil];
+    // One preset stays small; a file this big was not made by Export.
+    if (!data.length || data.length > 256 * 1024) {
+        showAlert(owner, @"Preset not imported", @"The file is not a preset, or it is far too large.");
+        return;
+    }
+    id file = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    NSString *name, *why;
+    NSDictionary *values;
+    if (!SGDSPPresetFromFile(file, &name, &values, &why)) {
+        showAlert(owner, @"Preset not imported", why ?: @"The file could not be read.");
+        return;
+    }
+    void (^store)(NSString *) = ^(NSString *under) {
+        SGDSPSavePresetValues(under, values);
+        if (kept) kept(under);
+    };
+    if (![SGDSPUserPresetNames() containsObject:name]) {
+        store(name);
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"A preset of this name is saved"
+        message:[NSString stringWithFormat:@"“%@” is one of yours. Replace it, or keep both.", name]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Replace" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        store(name);
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Keep both" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        store(SGDSPPresetUniqueName(name));
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [owner presentViewController:alert animated:YES completion:nil];
+}
+
+// The document picker over the JSON files Export made, as copies, so the file is readable once picked.
+@interface SGDSPPresetPicker : NSObject <UIDocumentPickerDelegate>
+@property (nonatomic, copy) void (^done)(NSString *name);   // the page's refresh, once the preset is in
+@end
+
+@implementation SGDSPPresetPicker
+
+- (void)documentPicker:(UIDocumentPickerViewController *)picker didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    UIViewController *owner = picker.presentingViewController;
+    void (^finish)(void) = ^{ importPreset(owner ?: SGTopController(), urls.firstObject, self.done); };
+    if (owner) [picker dismissViewControllerAnimated:YES completion:finish];
+    else dispatch_async(dispatch_get_main_queue(), finish);
+}
+
+@end
+
+static void pickPresetFile(UIViewController *owner, void (^done)(NSString *name)) {
+    static SGDSPPresetPicker *delegate;
+    if (!delegate) delegate = [SGDSPPresetPicker new];
+    delegate.done = done;
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeJSON] asCopy:YES];
+    picker.delegate = delegate;
+    [owner presentViewController:picker animated:YES completion:nil];
 }
 
 #pragma mark - presets
@@ -60,7 +161,8 @@ static NSArray<NSString *> *userPresetNames(void) {
     _footer = SGNote(@"Picking a preset turns Audio effects on and replaces the other effects' settings. A built-in "
                       "preset leaves the Graphic EQ, your headphones' correction, as it is; your own presets keep every "
                       "effect, the Graphic EQ too. What you had before the first pick is kept under Yours as Before presets. "
-                      "Swipe left on one of yours to delete it.");
+                      "Swipe left on one of yours to export or delete it, and import one someone shared from the row under "
+                      "Save. A preset of the same name is never replaced without a say.");
     self.tableView.tableFooterView = _footer;
 }
 
@@ -87,7 +189,7 @@ static NSArray<NSString *> *userPresetNames(void) {
 - (NSInteger)tableView:(UITableView *)table numberOfRowsInSection:(NSInteger)section {
     if (section == 0) return (NSInteger)_builtIn.count;
     if (section == 1) return MAX((NSInteger)_mine.count, 1);
-    return 1;
+    return SGAutoEqOutputUID().length ? 3 : 2;
 }
 
 - (UIView *)tableView:(UITableView *)table viewForHeaderInSection:(NSInteger)section {
@@ -109,7 +211,15 @@ static NSArray<NSString *> *userPresetNames(void) {
 - (UITableViewCell *)tableView:(UITableView *)table cellForRowAtIndexPath:(NSIndexPath *)path {
     UITableViewCell *cell = SGDequeueCell(table, @"preset");
     if (path.section == 2) {
-        SGFillCell(cell, @"Save current settings…", @"Every effect as it is now, under a name", nil, @"square.and.arrow.down");
+        if (path.row == 0) {
+            SGFillCell(cell, @"Save current settings…", @"Every effect as it is now, under a name", nil, @"square.and.arrow.down");
+        } else if (path.row == 1) {
+            SGFillCell(cell, @"Import from file…", @"A preset shared as a file, from Export on one of yours", nil, @"tray.and.arrow.down");
+        } else {
+            NSString *outName = SGAutoEqOutputName() ?: @"this output";
+            BOOL rem = SGDSPPresetOutputRemembered(SGAutoEqOutputUID());
+            SGFillCell(cell, @"Preset per output", [NSString stringWithFormat:@"%@ (%@)", outName, rem ? @"On" : @"Off"], nil, @"airpodspro");
+        }
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
         return cell;
     }
@@ -132,7 +242,18 @@ static NSArray<NSString *> *userPresetNames(void) {
 - (void)tableView:(UITableView *)table didSelectRowAtIndexPath:(NSIndexPath *)path {
     [table deselectRowAtIndexPath:path animated:YES];
     if (path.section == 2) {
-        [self askForName];
+        if (path.row == 0) [self askForName];
+        else if (path.row == 1) pickPresetFile(self, ^(NSString *kept) {
+            self->_mine = userPresetNames();
+            NSIndexPath *row = [NSIndexPath indexPathForRow:(NSInteger)[self->_mine indexOfObject:kept] inSection:1];
+            if (row.row >= 0) self->_picked = row;
+            [self.tableView reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, 2)] withRowAnimation:UITableViewRowAnimationFade];
+        });
+        else {
+            BOOL rem = !SGDSPPresetOutputRemembered(SGAutoEqOutputUID());
+            SGDSPRememberPresetOutput(rem);
+            [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:2] withRowAnimation:UITableViewRowAnimationNone];
+        }
         return;
     }
     if (path.section == 1 && !_mine.count) return;
@@ -143,8 +264,13 @@ static NSArray<NSString *> *userPresetNames(void) {
         _kept = YES;
         _mine = userPresetNames();
     }
-    if (path.section == 0) SGDSPLoadBuiltInPreset(path.row);
-    else if (!SGDSPLoadUserPreset(name)) return;
+    if (path.section == 0) {
+        SGDSPLoadBuiltInPreset(path.row);
+        SGDSPRecordOutputPresetPick(nil, path.row);
+    } else if (!SGDSPLoadUserPreset(name)) return;
+    else {
+        SGDSPRecordOutputPresetPick(name, -1);
+    }
     _picked = name ? [NSIndexPath indexPathForRow:(NSInteger)[_mine indexOfObject:name] inSection:1] : path;
     [table reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, 2)] withRowAnimation:UITableViewRowAnimationNone];
 }
@@ -152,6 +278,15 @@ static NSArray<NSString *> *userPresetNames(void) {
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)table trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)path {
     if (path.section != 1 || !_mine.count) return nil;
     NSString *name = _mine[(NSUInteger)path.row];
+    UIContextualAction *share = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal title:@"Export"
+        handler:^(UIContextualAction *action, UIView *view, void (^done)(BOOL)) {
+            // The sheet waits for the swipe to close first.
+            done(YES);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                sharePreset(self, name);
+            });
+        }];
+    share.image = [UIImage systemImageNamed:@"square.and.arrow.up"];
     UIContextualAction *delete = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive title:@"Delete"
         handler:^(UIContextualAction *action, UIView *view, void (^done)(BOOL)) {
             SGDSPDeleteUserPreset(name);
@@ -165,7 +300,7 @@ static NSArray<NSString *> *userPresetNames(void) {
             done(YES);
         }];
     delete.image = [UIImage systemImageNamed:@"trash"];
-    return [UISwipeActionsConfiguration configurationWithActions:@[delete]];
+    return [UISwipeActionsConfiguration configurationWithActions:@[share, delete]];
 }
 
 - (void)askForName {

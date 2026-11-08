@@ -19,6 +19,7 @@
 #import <UIKit/UIGestureRecognizerSubclass.h>
 #import "Core/SGCore.h"
 #import "Redesigned/Kit/SGRKit.h"
+#import "Redesigned/Kit/SGRAccent.h"
 #import "Shared/Haptics/Haptics.h"
 #import "Shared/Lyrics/Lyrics.h"
 #import "Player.h"
@@ -31,13 +32,20 @@ static const NSTimeInterval kSpinnerCheck = 0.6;
 // one sent before the player caught up, for this long; after it the player's word is final.
 static const NSTimeInterval kTapTrust = 1.2;
 
-static char kPreviousKey, kNextKey, kPlayKey, kGlyphKey, kTakeKey, kRemainingKey;
+static char kPreviousKey, kNextKey, kPlayKey, kShuffleKey, kRepeatKey, kGlyphKey, kTakeKey, kRemainingKey;
 static __weak UIView *sg_playView;
 static __weak UIButton *sg_playButton;
 static CFTimeInterval sg_tappedUntil;
 static BOOL sg_tappedPaused;
 static __weak SGRGlyphView *sg_playGlyph;
 static __weak UIView *sg_controlsHost;
+
+BOOL SGRPlayerMusicIconsOn(void) {
+    static BOOL on;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ on = SGFlag(SGRKeyPlayerMusicIcons, NO); });
+    return on;
+}
 
 void SGRPlayerVanish(UIView *view) {
     if (!view) return;
@@ -175,6 +183,49 @@ static void playGlyph(UIView *host) {
     dispatch_once(&once, ^{ SGLog(@"redesign player: play glyph over %@ (disc %@ suppressed), spinner %@", NSStringFromClass(play.class), NSStringFromClass(disc.class), spinnerShowing(button) ? @"showing" : @"hidden"); });
 }
 
+static void modeButtons(UIView *host) {
+    UIView *shuffle = SGRFindByIdentifier(host, @"NowPlaying-ShuffleButton", &kShuffleKey);
+    if (!shuffle) shuffle = SGRFindByIdentifier(host, @"SPTNowPlayingShuffleButton", &kShuffleKey);
+    if (shuffle) {
+        if (SGHidden(SGRKeyPlayerHideShuffle)) {
+            SGRPlayerVanish(shuffle);
+        } else if (SGRPlayerMusicIconsOn()) {
+            UIView *content = shuffle.subviews.firstObject ?: shuffle;
+            SGRGlyphView *glyph = glyphFor(shuffle, @"shuffle", 20);
+            SGForEachView(content, ^(UIView *view) {
+                if (view != glyph && ([view isKindOfClass:UIImageView.class] || [NSStringFromClass(view.class) containsString:@"IconView"])) {
+                    SGRPlayerVanish(view);
+                }
+            });
+            BOOL on = SGPlayerState().options.shufflingContext || [shuffle.accessibilityValue.lowercaseString containsString:@"on"];
+            glyph.tintColor = on ? (SGRAccentColor() ?: SGRPrimary()) : SGRPrimary();
+            keepOnTop(glyph, content);
+        }
+    }
+
+    UIView *repeat = SGRFindByIdentifier(host, @"Nowplaying-RepeatButton", &kRepeatKey);
+    if (repeat) {
+        if (SGHidden(SGRKeyPlayerHideRepeat)) {
+            SGRPlayerVanish(repeat);
+        } else if (SGRPlayerMusicIconsOn()) {
+            UIView *content = repeat.subviews.firstObject ?: repeat;
+            SPTPlayerOptions *opts = SGPlayerState().options;
+            BOOL trackRepeat = opts.repeatingTrack || [repeat.accessibilityValue.lowercaseString containsString:@"one"] || [repeat.accessibilityValue containsString:@"1"];
+            BOOL anyRepeat = trackRepeat || opts.repeatingContext || [repeat.accessibilityValue.lowercaseString containsString:@"on"] || [repeat.accessibilityValue.lowercaseString containsString:@"context"];
+            NSString *sym = trackRepeat ? @"repeat.1" : @"repeat";
+            SGRGlyphView *glyph = glyphFor(repeat, sym, 20);
+            [glyph setSymbol:sym animated:NO];
+            SGForEachView(content, ^(UIView *view) {
+                if (view != glyph && ([view isKindOfClass:UIImageView.class] || [NSStringFromClass(view.class) containsString:@"IconView"])) {
+                    SGRPlayerVanish(view);
+                }
+            });
+            glyph.tintColor = anyRepeat ? (SGRAccentColor() ?: SGRPrimary()) : SGRPrimary();
+            keepOnTop(glyph, content);
+        }
+    }
+}
+
 %hook _TtC20NowPlaying_ModesImpl28PlaybackControlsElementsUnit
 - (void)viewDidLayoutSubviews {
     %orig;
@@ -186,6 +237,7 @@ static void playGlyph(UIView *host) {
     skipGlyph(host, @"SPTNowPlayingPreviousTrackButton", &kPreviousKey, @"backward.fill");
     skipGlyph(host, @"SPTNowPlayingNextTrackButton", &kNextKey, @"forward.fill");
     playGlyph(host);
+    modeButtons(host);
 }
 %end
 
@@ -197,6 +249,7 @@ static void playGlyph(UIView *host) {
 - (void)playerStateDidChange:(SPTPlayerState *)state {
     // The first state can land after the controls laid out, which left the disc for want of one.
     if (!sg_playGlyph) [sg_controlsHost setNeedsLayout];
+    if (sg_controlsHost && SGRPlayerMusicIconsOn()) modeButtons(sg_controlsHost);
     refreshPlayGlyph(YES);
     // Spotify raises its spinner a moment after a state says loading, and drops it a moment after.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSpinnerCheck * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ refreshPlayGlyph(YES); });
@@ -223,11 +276,12 @@ static UILabel *monospaced(UIView *host, NSString *identifier, const void *findK
 // its own use the same class.
 %hook _TtC28EncoreConsumerMobile_BaseKit14PlayButtonView
 - (void)uiButtonTapped {
+    if ((UIView *)self == sg_playView) {
+        playTapped();
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{ SGLog(@"redesign player: play glyph turned at the tap"); });
+    }
     %orig;
-    if ((UIView *)self != sg_playView) return;
-    playTapped();
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ SGLog(@"redesign player: play glyph turned at the tap"); });
 }
 %end
 

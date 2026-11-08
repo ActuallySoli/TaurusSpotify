@@ -33,9 +33,6 @@ static void *(*originalInit)(void *,SEL,void *,void *,void *,void *);
 static unsigned long long (*originalStateForTrack)(id,SEL,id);
 static os_unfair_lock stateLock=OS_UNFAIR_LOCK_INIT;
 static NSDictionary *snapshot;
-static const uint8_t supportedUUID[]={0xfb,0xce,0x22,0xc1,0x7e,0x1b,0x3e,0x0d,0x9b,0xe8,0x66,0xff,0x92,0x91,0x94,0x3e};
-static const uint8_t setterCode[]={0xe6,0x03,0x1e,0xaa,0x8f,0x3e,0xf4,0x95,0xfe,0x03,0x06,0xaa,0xfd,0x7b,0x11,0xa9};
-static const uintptr_t setterOffset=0x1d1debc;
 static atomic_int requestedKeyMode=ATOMIC_VAR_INIT(0);
 static atomic_int lastSelectorMode=ATOMIC_VAR_INIT(-1);
 static atomic_uint_fast64_t selectorReads[2];
@@ -97,7 +94,7 @@ static BOOL supportedImage(uintptr_t image) {
         if(cursor>end||end-cursor<sizeof(command)||!readMemory(cursor,&command,sizeof(command))||command.cmdsize<sizeof(command)||command.cmdsize>end-cursor)return NO;
         if(command.cmd==LC_UUID) {
             struct uuid_command uuid;
-            return command.cmdsize>=sizeof(uuid)&&readMemory(cursor,&uuid,sizeof(uuid))&&!memcmp(uuid.uuid,supportedUUID,sizeof(supportedUUID));
+            return command.cmdsize>=sizeof(uuid)&&readMemory(cursor,&uuid,sizeof(uuid))&&!memcmp(uuid.uuid,SAPSupportedUUID,sizeof(SAPSupportedUUID));
         }
         cursor+=command.cmdsize;
     }
@@ -107,7 +104,7 @@ static BOOL supportedImage(uintptr_t image) {
 // binaries. -1 means these executable bytes are unknown and must not be used.
 static int keyModeKind(uintptr_t image) {
     uint32_t instruction=0;
-    if(!image || !readMemory(image+0x3594f60,&instruction,sizeof(instruction)))return -1;
+    if(!image || !readMemory(image+SAPKeyRequestOffset,&instruction,sizeof(instruction)))return -1;
     if(instruction==UINT32_C(0x52800002))return 0;
     if(instruction==UINT32_C(0x52800022))return 1;
     if(!memcmp(&instruction,SAPTraceRequestHead,sizeof(SAPTraceRequestHead))) {
@@ -202,7 +199,7 @@ static BOOL nativeState(id wrapper,void **manager,uintptr_t *image,NSMutableDict
     Dl_info info={0};
     if(!dladdr((void *)table,&info)||!info.dli_fbase)return NO;
     *image=(uintptr_t)info.dli_fbase;
-    if(table-*image+UINT64_C(0x100000000)!=UINT64_C(0x10ca326c8)||!supportedImage(*image))return NO;
+    if(table-*image!=SAPOfflineManagerVtableOffset||!supportedImage(*image))return NO;
     // This wrapper is captured only from SPTOfflineManagerImplementation's
     // verified initializer. Require its C++ vtable and first method to resolve
     // inside the same exact Spotify image before using the unchanged field layout.
@@ -211,15 +208,15 @@ static BOOL nativeState(id wrapper,void **manager,uintptr_t *image,NSMutableDict
        !dladdr((void *)firstMethod,&methodInfo) ||
        (uintptr_t)methodInfo.dli_fbase!=*image)return NO;
     out[@"manager_vtable_va"]=[NSString stringWithFormat:@"0x%llx",(unsigned long long)(table-*image+UINT64_C(0x100000000))];
-    uint8_t code[sizeof(setterCode)];
-    if(!readMemory(*image+setterOffset,code,sizeof(code)))return NO;
+    uint8_t code[sizeof(SAPSetterCode)];
+    if(!readMemory(*image+SAPSetterOffset,code,sizeof(code)))return NO;
     BOOL guarded=!memcmp(code,SAPGuardedSetterHead,sizeof(SAPGuardedSetterHead));
     if(guarded) {
         uint8_t stub[sizeof(SAPRestrictionTrampoline)];
-        if(memcmp(code+4,setterCode+4,sizeof(code)-4) ||
+        if(memcmp(code+4,SAPSetterCode+4,sizeof(code)-4) ||
             !readMemory(*image+SAPRestrictionCaveOffset,stub,sizeof(stub)) ||
             memcmp(stub,SAPRestrictionTrampoline,sizeof(stub)))return NO;
-    } else if(memcmp(code,setterCode,sizeof(code)))return NO;
+    } else if(memcmp(code,SAPSetterCode,sizeof(code)))return NO;
     out[@"restriction_guard_active"]=@(guarded);
     int modeKind=keyModeKind(*image);
     out[@"key_mode_runtime_selectable"]=@(modeKind==2);
@@ -409,7 +406,7 @@ void SAPPrepareNativeOffline(BOOL (^stillRequested)(void),void (^completion)(BOO
         if(stillRequested&&!stillRequested()) { [operation finish:NO reason:SAPL(@"Подготовка отменена.",@"Preparation cancelled.") report:nil];return; }
         void *manager=NULL;uintptr_t image=0;NSMutableDictionary *before=[NSMutableDictionary dictionary];
         // The app's invalidate method clears wrapper+8. Read it only on its queue.
-        if(!nativeState(wrapper,&manager,&image,before)) { [operation finish:NO reason:SAPL(@"Нативный менеджер завершён или сборка Spotify не совпадает с проверенной 9.1.90.",@"The native manager has shut down, or this Spotify build does not match the verified 9.1.90.") report:nil];return; }
+        if(!nativeState(wrapper,&manager,&image,before)) { [operation finish:NO reason:SAPL(@"Нативный менеджер завершён или сборка Spotify не совпадает с проверенной 9.1.90.",@"The native manager has shut down, or this Spotify build does not match the verified Downloads engine.") report:nil];return; }
         // v16: previously only raised the quota when it was exactly (0,0) — the
         // "never synced" sentinel. A real account can sync a small nonzero limit
         // (this is what capped the user's playlist download after a handful of
@@ -421,7 +418,7 @@ void SAPPrepareNativeOffline(BOOL (^stillRequested)(void),void (^completion)(BOO
         if(changed) {
             int32_t newDuration=(int32_t)MAX([before[@"music_duration_seconds"] longLongValue],(long long)desiredDurationSeconds);
             int32_t newTrackLimit=(int32_t)MAX([before[@"music_limit"] intValue],desiredTrackLimit);
-            ((void(*)(void *,int32_t,int32_t,int32_t,int32_t,int32_t))(image+setterOffset))(manager,newDuration,newTrackLimit,[before[@"episode_duration_seconds"] intValue],[before[@"episode_limit"] intValue],[before[@"abp_duration_seconds"] intValue]);
+            ((void(*)(void *,int32_t,int32_t,int32_t,int32_t,int32_t))(image+SAPSetterOffset))(manager,newDuration,newTrackLimit,[before[@"episode_duration_seconds"] intValue],[before[@"episode_limit"] intValue],[before[@"abp_duration_seconds"] intValue]);
         }
         NSMutableDictionary *after=[NSMutableDictionary dictionary];
         BOOL stateValid=nativeState(wrapper,&manager,&image,after);
@@ -532,7 +529,7 @@ void SAPNativeOfflineZeroUpdateForTesting(void (^completion)(NSDictionary *)) {
     ((void(*)(id,SEL,id))objc_msgSend)(scheduler,NSSelectorFromString(@"postBlock:"),^{
         NSMutableDictionary *before=[NSMutableDictionary dictionary];void *manager=NULL;uintptr_t image=0;
         BOOL guarded=nativeState(wrapper,&manager,&image,before)&&[before[@"restriction_guard_active"] boolValue];
-        if(guarded)((void(*)(void *,int32_t,int32_t,int32_t,int32_t,int32_t))(image+setterOffset))
+        if(guarded)((void(*)(void *,int32_t,int32_t,int32_t,int32_t,int32_t))(image+SAPSetterOffset))
             (manager,0,0,[before[@"episode_duration_seconds"] intValue],[before[@"episode_limit"] intValue],[before[@"abp_duration_seconds"] intValue]);
         NSMutableDictionary *after=[NSMutableDictionary dictionary];BOOL valid=nativeState(wrapper,&manager,&image,after);
         NSDictionary *result=@{@"guarded":@(guarded),@"zero_update_tested":@(guarded),@"before":before,@"after":after,@"valid":@(valid)};

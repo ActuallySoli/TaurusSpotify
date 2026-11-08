@@ -756,7 +756,7 @@ static void restartAnimatedArtwork(void) {
 }
 
 void SGRPlayerMenuSetBackground(SGRPlayerBackgroundKind kind) {
-    if (kind < SGRPlayerBackgroundStill || kind > SGRPlayerBackgroundFill) {
+    if (kind < SGRPlayerBackgroundStill || kind > SGRPlayerBackgroundPicture) {
         SGLog(@"redesign player: ignored invalid background style %ld", (long)kind);
         return;
     }
@@ -769,6 +769,7 @@ void SGRPlayerMenuSetBackground(SGRPlayerBackgroundKind kind) {
     [field refreshStyleAnimated:YES];
     if (current == SGRPlayerBackgroundAnimated || kind == SGRPlayerBackgroundAnimated) restartAnimatedArtwork();
     SGRPlayerVisualiserUpdate();
+    SGRPlayerShaderUpdate();
     SGRPlayerHoldField();
     updateCoverVisibility(YES);
     SGLog(@"redesign player: background switched to %@ from the menu", SGRPlayerBackgroundNames()[(NSUInteger)kind]);

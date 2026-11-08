@@ -8,6 +8,8 @@ typedef enum {
     SGAudioStageSpeedPitch,
     SGAudioStageEffects,
     SGAudioStageHaptics,
+    SGAudioStageSpectrum,   // reads the finished buffer for the player's Visualiser and Shader; changes nothing
+    SGAudioStageWebJam,     // bounded copy of finished audio for guests; never changes the output
     SGAudioStageCount
 } SGAudioStage;
 

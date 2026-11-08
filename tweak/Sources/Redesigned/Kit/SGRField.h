@@ -8,6 +8,8 @@ extern NSNotificationName const SGRFieldColorDidChangeNotification;
 @property (nonatomic) BOOL flows;
 // The sharp artwork layered over the blurred backdrop, fading into it toward the bottom.
 @property (nonatomic) BOOL fills;
+@property (nonatomic) BOOL black;
+@property (nonatomic, strong) UIImage *picture;
 @property (nonatomic) CGFloat backdropOpacity;
 @property (nonatomic) CGFloat fillOpacity;
 @property (nonatomic) CGFloat fluidOpacity;
