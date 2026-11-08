@@ -182,6 +182,14 @@ void SGAutoEqOutputChanged(NSString *uid, NSString *name) {
     if (!uid.length || [uid isEqualToString:sg_outputUID]) return;
     sg_outputUID = [uid copy];
     sg_outputName = name.length ? [name copy] : sg_outputUID;
+    NSDictionary *presetMap = [NSUserDefaults.standardUserDefaults dictionaryForKey:SGKeyDSPPresetOutputs];
+    NSDictionary *presetEntry = [presetMap isKindOfClass:NSDictionary.class] ? presetMap[uid] : nil;
+    if ([presetEntry isKindOfClass:NSDictionary.class]) {
+        NSString *pName = presetEntry[@"name"];
+        NSNumber *bIdx = presetEntry[@"builtIn"];
+        if (pName.length) SGDSPLoadUserPreset(pName);
+        else if (bIdx) SGDSPLoadBuiltInPreset(bIdx.integerValue);
+    }
     NSDictionary *entry = outputs()[uid];
     if (entry) {
         if (![entry[@"name"] isEqual:sg_outputName]) {
@@ -263,4 +271,35 @@ void SGAutoEqApply(SGAutoEqHeadphone *headphone, void (^done)(NSString *)) {
             else done(SGAutoEqApplyText(headphone.path, text) ? nil : @"The file is not a GraphicEQ line");
         });
     });
+}
+
+BOOL SGDSPPresetOutputRemembered(NSString *uid) {
+    if (!uid.length) return NO;
+    NSDictionary *map = [NSUserDefaults.standardUserDefaults dictionaryForKey:SGKeyDSPPresetOutputs];
+    return [map isKindOfClass:NSDictionary.class] && [map[uid] isKindOfClass:NSDictionary.class];
+}
+
+void SGDSPRememberPresetOutput(BOOL remember) {
+    if (!sg_outputUID.length) return;
+    NSDictionary *existing = [NSUserDefaults.standardUserDefaults dictionaryForKey:SGKeyDSPPresetOutputs];
+    NSMutableDictionary *map = [existing isKindOfClass:NSDictionary.class] ? [existing mutableCopy] : [NSMutableDictionary dictionary];
+    if (remember) {
+        map[sg_outputUID] = @{@"outputName": sg_outputName ?: sg_outputUID};
+    } else {
+        [map removeObjectForKey:sg_outputUID];
+    }
+    [NSUserDefaults.standardUserDefaults setObject:map forKey:SGKeyDSPPresetOutputs];
+    changed();
+}
+
+void SGDSPRecordOutputPresetPick(NSString *presetName, NSInteger builtInIndex) {
+    if (!sg_outputUID.length || !SGDSPPresetOutputRemembered(sg_outputUID)) return;
+    NSDictionary *existing = [NSUserDefaults.standardUserDefaults dictionaryForKey:SGKeyDSPPresetOutputs];
+    NSMutableDictionary *map = [existing isKindOfClass:NSDictionary.class] ? [existing mutableCopy] : [NSMutableDictionary dictionary];
+    if (presetName.length) {
+        map[sg_outputUID] = @{@"outputName": sg_outputName ?: sg_outputUID, @"name": presetName};
+    } else if (builtInIndex >= 0) {
+        map[sg_outputUID] = @{@"outputName": sg_outputName ?: sg_outputUID, @"builtIn": @(builtInIndex)};
+    }
+    [NSUserDefaults.standardUserDefaults setObject:map forKey:SGKeyDSPPresetOutputs];
 }

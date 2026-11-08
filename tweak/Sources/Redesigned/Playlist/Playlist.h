@@ -1,5 +1,10 @@
 #import <UIKit/UIKit.h>
 
+#define SGRKeyPlaylistFullCover @"spotifyglass.redesign.playlist.fullCover"
+
+BOOL SGRPlaylistFullCoverOn(void);
+UIViewController *SGRPlaylistSettingsPage(void);
+
 // The page's list (trees/clean/playlist/02.txt:23).
 extern NSString *const SGRPlaylistListIdentifier;
 // PlaylistMenu.x. The row of curation pills over the first track (own-playlist/01.txt:33).

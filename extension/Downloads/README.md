@@ -1,6 +1,6 @@
 # Downloads
 
-Spotify 9.1.90's own offline downloads, unlocked, and the page in Mod Settings that drives them.
+Spotify 9.1.90/9.1.94's own offline downloads, and the page in Mod Settings that drives them.
 
 This directory is the **Pixie Download Manager** engine by [Glongq](https://github.com/Glongq/Vitrine-Pixie)
 (v1.2, source pinned to Spotify 9.1.90), taken from Vitrine-Pixie and trimmed for Taurus. It is licensed
@@ -13,11 +13,13 @@ GPL-3.0 (`LICENSE-Pixie-GPL-3.0`); its notices stay as they are.
 
 `scripts/pipeline.sh` runs `tools/build_downloads.py` on the decrypted IPA before the tweak is injected:
 
-1. It checks the Spotify version and the executable's UUID. Anything but 9.1.90 / `fbce22c1…943e` exits 3 and
+1. It checks the Spotify version and the executable's UUID. Only 9.1.90 / `fbce22c1…943e` and
+   9.1.94 / `1dfddfa1…4700` are accepted. Other builds exit 3 and
    the build goes on **without** Downloads; the Downloads page then says so.
 2. `patch_native_restrictions.py` clamps the offline limits Spotify's server sends, `patch_key_request_mode.py`
    fixes the offline key request to mode 0, `patch_native_trace.py` adds passive observation points. Each one
-   compares the exact original bytes first and writes only into zero-filled `__TEXT` header padding.
+   compares the exact original bytes first and writes only into verified zero-filled, unsectioned
+   `__TEXT` padding. 9.1.94 uses the segment's terminal padding to keep branches in range.
 3. The companion library is compiled and handed to `cyan` with the tweak.
 
 Pass `--no-downloads` to `pipeline.sh` to skip all of it.

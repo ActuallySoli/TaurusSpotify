@@ -16,15 +16,17 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>NSMotionUsageDescription</key>
-	<string>Move your head with AirPods in to like a song or change track.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Share the player and lyrics with a browser on the same Wi-Fi, discover nearby playback devices, and host a Local Jam to listen together.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_spotify-ln-check._tcp</string>
 		<string>_spotify-connect._tcp</string>
 		<string>_googlecast._tcp</string>
+		<string>_taurusjam._tcp</string>
+		<string>_taurusjam._udp</string>
 	</array>
 	<key>NSMotionUsageDescription</key>
-	<string>Head gestures and Spatial Audio use motion to respond to how you move.</string>
+	<string>Head gestures, spatial voice and motion-reactive effects use motion to respond to how you move.</string>
 </dict>
 </plist>

@@ -42,6 +42,7 @@
 @end
 
 @interface SGModPage : SGPage
+@property (nonatomic, copy) NSArray<SGModSection *> *sections;
 - (instancetype)initWithTitle:(NSString *)title intro:(NSString *)intro sections:(NSArray<SGModSection *> *)sections footer:(NSString *)footer;
 // Re-reads every row's visible block so rows that come and go on their own appear or leave now.
 - (void)refreshVisibility;

@@ -42,9 +42,29 @@ static BOOL isBrowseCell(UIView *content) {
     return answer.boolValue;
 }
 
+BOOL SGRSearchShowVideosOn(void) {
+    static BOOL on;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ on = SGHidden(SGRKeySearchShowVideos); });
+    return on;
+}
+
+static BOOL hasVideoCarousel(UIView *root) {
+    __block BOOL found = NO;
+    SGForEachView(root, ^(UIView *v) {
+        if (!found && [NSStringFromClass(v.class) containsString:@"WatchFeed"]) found = YES;
+    });
+    return found;
+}
+
 static SGRSearchKind kindOf(UIView *root) {
     if (!root) return SGRSearchKindPending;
-    return [root.accessibilityIdentifier isEqualToString:@"Components.UI.CategoryCardBrowse"] ? SGRSearchKindKeep : SGRSearchKindDrop;
+    if ([root.accessibilityIdentifier isEqualToString:@"Components.UI.CategoryCardBrowse"]) return SGRSearchKindKeep;
+    if (SGRSearchShowVideosOn() && hasVideoCarousel(root)) {
+        logOnce(@"kept a short video carousel");
+        return SGRSearchKindKeep;
+    }
+    return SGRSearchKindDrop;
 }
 
 // What a dropped cell holds, for the log: the first identifier in it, else its root's class.

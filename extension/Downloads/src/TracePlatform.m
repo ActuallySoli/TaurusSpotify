@@ -2,6 +2,8 @@
 #import "DiagnosticTrace.h"
 #import "NativeOffline.h"
 #import "NativeKeyTrace.h"
+#import "NativeRestrictionsPatch.h"
+#import "NativeTracePatch.h"
 #import <UIKit/UIKit.h>
 #import <AVFAudio/AVFAudio.h>
 #import <Network/Network.h>
@@ -22,13 +24,13 @@ static NSDictionary *route(void) {
 }
 static NSString *hex(const uint8_t *bytes,NSUInteger count) {NSMutableString *s=[NSMutableString stringWithCapacity:count*2];for(NSUInteger i=0;i<count;i++)[s appendFormat:@"%02x",bytes[i]];return s;}
 static NSArray *criticalSamples(uintptr_t base,NSString *uuid) {
-    if(![uuid isEqual:@"fbce22c17e1b3e0d9be866ff9291943e"])return @[];
+    if(![uuid isEqual:hex(SAPSupportedUUID,sizeof(SAPSupportedUUID))])return @[];
     static const struct {const char *name;uintptr_t offset;size_t length;} points[]={
-        {"key_request_call_site",0x3594f60,16},{"key_request_observer",0x23700,239},
-        {"key_success_entry",0x6231e70,16},{"key_success_observer",0x23900,251},
-        {"key_failure_entry",0x893730,16},{"key_failure_observer",0x23b00,251},
-        {"quota_setter_entry",0x1d1debc,16},{"quota_guard",0x23f00,52},
-        {"native_key_provider_entry",0x83de7b0,16}
+        {"key_request_call_site",SAPTraceRequestOffset,16},{"key_request_observer",SAPTraceRequestCaveOffset,sizeof(SAPTraceRequestCode)},
+        {"key_success_entry",SAPTraceSuccessOffset,16},{"key_success_observer",SAPTraceSuccessCaveOffset,sizeof(SAPTraceSuccessCode)},
+        {"key_failure_entry",SAPTraceFailureOffset,16},{"key_failure_observer",SAPTraceFailureCaveOffset,sizeof(SAPTraceFailureCode)},
+        {"quota_setter_entry",SAPSetterOffset,16},{"quota_guard",SAPRestrictionCaveOffset,sizeof(SAPRestrictionTrampoline)},
+        {"native_key_provider_entry",SAPNativeKeyProviderOffset,16}
     };
     NSMutableArray *samples=[NSMutableArray array];
     for(unsigned i=0;i<sizeof(points)/sizeof(points[0]);i++) {

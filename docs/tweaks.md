@@ -369,7 +369,15 @@ Lyrics: the ordered list of lyrics sources, lyrics for every track,
 naming the source in the redesign, artist-name replacement on the lock screen,
 and glass lyrics in the native look; in the redesign also
 which of the lyrics, their pronunciation and their translation is set largest, Genius meaning marks (which can
-be hidden without losing the hold-on-a-line meaning sheet), and the translation's language. Player controls
+be hidden without losing the hold-on-a-line meaning sheet), and the translation's language. Lyrics → Adjust → Lyrics shader offers Classic plus Neon,
+Inferno, Hologram, Chrome and Blueprint, with intensity and speed controls that apply immediately.
+The five word fills are independently authored Metal shaders. Each active word uses one transparent
+surface and glyph textures that follow its existing letter motion and inherited timing mask.
+Compilation and GPU submission run off the UI thread; the existing lyrics display link drives them.
+Paused/offscreen lyrics and Reduce Motion keep the static text. Allocation and GPU failures also keep
+that text; glyphs and surfaces have shared memory/count budgets. The saved effect profiles keep their
+existing names and format. GPU and simulator checks are in `harness/lyrics-shaders/`.
+Player controls
 include independent portrait and landscape auto-hide switches for the lyrics screen. Lock Screen: its controls and, under Artwork, the full-screen style selector and ordered style hierarchy:
 Canvas (the track's Canvas or the album's Apple Music animated cover), Lyrics over the blurred cover,
 Fill artwork, Colourful (Every Song's moving-cover treatment), and Default (iOS's full album artwork).
@@ -442,6 +450,50 @@ can be switched off independently from Player > Mini player > Mini player transi
 setting controls whether the bar merges into the compact tab while scrolling. The minimized tab uses its
 own square glass button, sized within the available row and aligned to the mini-player card, so UIKit's
 safe-area-dependent tab-item shape cannot squash it on different devices.
+
+## Web Jam
+
+Web Jam replaces Browser Player on the Mod Settings root in both looks. The existing
+Premium, ads & privacy → Jam → Web Jam entry opens the same page. `Shared/WebPlayer/`
+is retained for reference and excluded from the tweak build; its old preferences are inert.
+
+Guests join the host's Wi-Fi address on port 8787 and tap Start listening to hear the host's
+local audio with a short buffering delay. Each guest has a local volume control, the current
+song and host progress, a queue, named request statuses, a recently-played list and a count
+of active browser tabs. The host still owns playback. Keep Spotify playing on this iPhone
+and the browser tab open; audio from a separate Spotify Connect receiver cannot be captured.
+
+Song links, playlist links, localized `/intl-xx/` links, Spotify URIs and bare track IDs are
+accepted. A playlist is one request to start Spotify's playlist context at the next song
+boundary, not an import of every playlist item. Later requests take priority at subsequent
+song boundaries. Spotify decides access to private/unavailable playlists and tracks. A
+request remains queued until playback is confirmed; one that fails to start within twelve
+seconds becomes Unavailable and no longer blocks the queue. Recent songs are limited to
+30 and request history to 100, in memory for the current session.
+
+`WebJamAudio.m` registers a read-only stage after the shared output effects. Its render
+callback only copies PCM into the existing bounded SPSC ring: no Objective-C, allocations,
+network I/O, locks or waits on the audio thread. A serial worker emits quarter-second,
+16-bit stereo PCM WAV packets from supported float32 mono/stereo output at 8–192 kHz.
+A short memory-only segment window lets guests catch up without recording a song to disk.
+Pause, seek, track/format changes and Stop invalidate earlier epochs. Browser Web Audio
+schedules complete WAV packets with bounded buffering and handles network loss/reconnection.
+
+The switch applies immediately and is remembered across launches. The QR code and
+Copy/Share/Open actions appear only when the listener is ready and follow Wi-Fi address
+changes while settings are visible. Stop cancels title lookups and audio, leaves hosting
+only if Web Jam created it, and stops unused nearby discovery. A pre-existing Local Jam
+host stays running; leaving that shared host also stops Web Jam.
+
+Anyone on the same Wi-Fi with the address can hear the local audio, read the room and add
+requests. There is no password or per-session bearer token. HTTP stays local; title lookups
+contact Spotify's public oEmbed service and covers load from its public image CDN. Requests
+are capped at 100 queue entries, duplicates are rejected and metadata lookups have eight
+concurrent slots and a four-second timeout. Unresolved names retain their fallback title.
+
+The browser assets live in `Shared/Jam/Web/`; `scripts/generate-webjam.py` embeds them into
+`WebJamWeb.m` before each build. No browser framework or font CDN is required.
+See [WEB-JAM-LIVE-2026-11-06.md](WEB-JAM-LIVE-2026-11-06.md) for build evidence and device checks.
 
 ## Adding a feature
 

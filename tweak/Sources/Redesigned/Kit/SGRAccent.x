@@ -1,15 +1,20 @@
 #import "Core/SGCore.h"
+#import "SGRKit.h"
 #import "SGRAccent.h"
 #import "Settings/SGPageStyle.h"
 
+NSNotificationName const SGRAccentDidChangeNotification = @"SGRAccentDidChangeNotification";
+
 static const uint32_t kGreens[] = {0x1ED760, 0x1DB954};
 
-static NSInteger sg_accent = -1;   // 0xRRGGBB once chosen, read at launch
+static NSInteger sg_accent = -1;     // 0xRRGGBB once chosen, read at launch
+static NSInteger sg_autoAccent = -1; // 0xRRGGBB when Automatic accent colour reads a field or cover colour
 
 // The redesign's own green until another is picked; Spotify's is a pick of its own, stored as -1.
 static const NSInteger kDefaultAccent = 0x37F200;
 
 static NSInteger chosen(void) {
+    if (SGHidden(SGRKeyAccentAuto) && sg_autoAccent >= 0) return sg_autoAccent;
     NSInteger rgb = SGInt(SGRKeyAccent, kDefaultAccent);
     return rgb >= 0 && rgb <= 0xFFFFFF ? rgb : -1;
 }
@@ -18,6 +23,30 @@ static void unpack(uint32_t rgb, CGFloat *r, CGFloat *g, CGFloat *b) {
     *r = ((rgb >> 16) & 0xFF) / 255.0;
     *g = ((rgb >> 8) & 0xFF) / 255.0;
     *b = (rgb & 0xFF) / 255.0;
+}
+
+static void saveRecentAccent(NSInteger rgb) {
+    if (rgb < 0) return;
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSMutableArray<NSNumber *> *recent = [[defaults arrayForKey:SGRKeyAccentRecent] mutableCopy] ?: [NSMutableArray array];
+    [recent removeObject:@(rgb)];
+    [recent insertObject:@(rgb) atIndex:0];
+    while (recent.count > 5) [recent removeLastObject];
+    [defaults setObject:recent forKey:SGRKeyAccentRecent];
+}
+
+static void applyAutoColor(UIColor *source) {
+    if (!SGHidden(SGRKeyAccentAuto) || !source) return;
+    CGFloat h = 0, s = 0, v = 0, a = 1;
+    if (![source getHue:&h saturation:&s brightness:&v alpha:&a] || s < 0.12) return;
+    UIColor *bright = [UIColor colorWithHue:h saturation:MIN(0.85, MAX(0.48, s * 1.35)) brightness:MAX(0.88, v) alpha:1];
+    CGFloat r = 0, g = 0, b = 0;
+    [bright getRed:&r green:&g blue:&b alpha:&a];
+    NSInteger rgb = ((NSInteger)lround(r * 255) << 16) | ((NSInteger)lround(g * 255) << 8) | (NSInteger)lround(b * 255);
+    if (rgb == sg_autoAccent) return;
+    sg_autoAccent = rgb;
+    sg_accent = rgb;
+    [NSNotificationCenter.defaultCenter postNotificationName:SGRAccentDidChangeNotification object:nil];
 }
 
 UIColor *SGRAccentColor(void) {
@@ -29,6 +58,7 @@ UIColor *SGRAccentColor(void) {
 }
 
 NSString *SGRAccentLabel(void) {
+    if (SGHidden(SGRKeyAccentAuto)) return @"Automatic";
     NSInteger rgb = chosen();
     return rgb < 0 ? @"Spotify green" : [NSString stringWithFormat:@"#%06lX", (long)rgb];
 }
@@ -47,6 +77,9 @@ NSString *SGRAccentLabel(void) {
                  | ((uint32_t)lround(MIN(1, MAX(0, g)) * 255) << 8)
                  | (uint32_t)lround(MIN(1, MAX(0, b)) * 255);
     SGSetInt(SGRKeyAccent, rgb);
+    saveRecentAccent((NSInteger)rgb);
+    sg_accent = chosen();
+    [NSNotificationCenter.defaultCenter postNotificationName:SGRAccentDidChangeNotification object:nil];
 }
 
 @end
@@ -156,5 +189,19 @@ static id swappedValue(id value) {
 %ctor {
     if (!SGRedesignedUI()) return;
     sg_accent = chosen();
-    if (sg_accent >= 0) %init;
+    if (SGHidden(SGRKeyAccentAuto)) {
+        [NSNotificationCenter.defaultCenter addObserverForName:SGRFieldColorDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+            UIColor *color = note.userInfo[@"color"];
+            if (color) applyAutoColor(color);
+        }];
+        [NSNotificationCenter.defaultCenter addObserverForName:SGRNowPlayingArtworkDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+            UIImage *image = note.userInfo[@"image"];
+            if (!image) return;
+            SGRPaletteRequest req = {0};
+            [SGRPalette paletteForImage:image request:req completion:^(SGRPalette *palette) {
+                if (palette.fieldColor) applyAutoColor(palette.fieldColor);
+            }];
+        }];
+    }
+    if (sg_accent >= 0 || SGHidden(SGRKeyAccentAuto)) %init;
 }

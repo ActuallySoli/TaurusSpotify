@@ -1,3 +1,4 @@
+#import <AVFoundation/AVFoundation.h>
 #import "Core/SGCore.h"
 #import "Redesigned/Kit/SGRKit.h"
 #import "Redesigned/Kit/SGRHeaderInfo.h"
@@ -12,7 +13,7 @@ static const CGFloat kBar = 100, kFade = 150;
 
 static char kInfoKey, kHeroKey, kHeroHeightKey, kContainerHeightKey, kRowWatchedKey;
 static char kTitleKey, kMetaKey, kShuffleKey, kPlayKey, kFollowKey, kArtworkKey, kBarKey, kMoreKey, kMoreButtonKey;
-static char kLogoNameKey;
+static char kLogoNameKey, kReadyContext;
 
 #pragma mark - Spotify's views
 
@@ -69,11 +70,17 @@ static UIView *containerOf(UIView *header) {
 @property (nonatomic, readonly) UIImageView *picture;
 @property (nonatomic, copy) UIColor *fieldColor;
 - (void)followArtwork:(UIImageView *)source;
+- (void)findAppleArtworkFor:(NSString *)artist;
 @end
 
 @implementation SGRArtistHero {
     CAGradientLayer *_scrim, *_dissolve;
     __weak UIImageView *_artwork;
+    NSString *_appleArtist;
+    BOOL _hasApplePhoto;
+    AVQueuePlayer *_player;
+    AVPlayerLooper *_looper;
+    AVPlayerLayer *_motion;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -104,6 +111,7 @@ static UIView *containerOf(UIView *header) {
 }
 
 - (void)dealloc {
+    if (_motion) [_motion removeObserver:self forKeyPath:@"readyForDisplay" context:&kReadyContext];
     [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
@@ -132,7 +140,82 @@ static UIView *containerOf(UIView *header) {
     _scrim.frame = CGRectMake(0, 0, bounds.size.width, MIN(kTopScrim, bounds.size.height));
     CGFloat fade = round(bounds.size.height * kDissolve);
     _dissolve.frame = CGRectMake(0, bounds.size.height - fade, bounds.size.width, fade);
+    _motion.frame = bounds;
     [CATransaction commit];
+}
+
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    [self updateMotion];
+}
+
+- (void)findAppleArtworkFor:(NSString *)artist {
+    BOOL wantPhoto = SGEnabled(SGRKeyArtistApplePhoto);
+    BOOL wantMotion = SGEnabled(SGRKeyArtistMotion) && !SGRReduceMotion() && !NSProcessInfo.processInfo.lowPowerModeEnabled;
+    if (!artist.length || (!wantPhoto && !wantMotion) || [_appleArtist isEqualToString:artist]) return;
+    _appleArtist = [artist copy];
+    __weak SGRArtistHero *weakSelf = self;
+    CGFloat pixels = UIScreen.mainScreen.bounds.size.width * UIScreen.mainScreen.scale;
+    SGMotionArtistArtwork(artist, wantPhoto, wantMotion, pixels, ^(UIImage *photo, NSURL *motionFile) {
+        SGRArtistHero *hero = weakSelf;
+        if (!hero || ![hero->_appleArtist isEqualToString:artist]) return;
+        if (photo) {
+            hero->_hasApplePhoto = YES;
+            hero->_picture.image = photo;
+            SGRArtistSetArtwork(hero, photo);
+            SGRRevealMark(SGRArtistPageOf(hero), SGRRevealPicture);
+        }
+        if (motionFile) [hero playMotion:motionFile];
+    });
+}
+
+- (void)playMotion:(NSURL *)file {
+    if (_motion) return;
+    AVQueuePlayer *player = [AVQueuePlayer new];
+    player.muted = YES;
+    player.allowsExternalPlayback = NO;
+    player.preventsDisplaySleepDuringVideoPlayback = NO;
+    _looper = [AVPlayerLooper playerLooperWithPlayer:player templateItem:[AVPlayerItem playerItemWithURL:file]];
+    _player = player;
+    _motion = [AVPlayerLayer playerLayerWithPlayer:player];
+    _motion.videoGravity = AVLayerVideoGravityResizeAspectFill;
+    _motion.zPosition = 0.5;
+    _motion.opacity = 0;
+    _motion.frame = self.bounds;
+    [self.layer addSublayer:_motion];
+    [_motion addObserver:self forKeyPath:@"readyForDisplay" options:0 context:&kReadyContext];
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    for (NSNotificationName name in @[UIApplicationDidBecomeActiveNotification, UIApplicationWillResignActiveNotification,
+                                      NSProcessInfoPowerStateDidChangeNotification, UIAccessibilityReduceMotionStatusDidChangeNotification]) {
+        [center addObserver:self selector:@selector(updateMotionSoon) name:name object:nil];
+    }
+    [self updateMotion];
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
+    if (context != &kReadyContext) {
+        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!self->_motion.readyForDisplay || self->_motion.opacity > 0) return;
+        [CATransaction begin];
+        [CATransaction setAnimationDuration:SGRCrossfade];
+        self->_motion.opacity = 1;
+        [CATransaction commit];
+    });
+}
+
+- (void)updateMotionSoon {
+    dispatch_async(dispatch_get_main_queue(), ^{ [self updateMotion]; });
+}
+
+- (void)updateMotion {
+    if (!_player) return;
+    BOOL front = UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
+    BOOL moving = self.window && front && !SGRReduceMotion() && !NSProcessInfo.processInfo.lowPowerModeEnabled;
+    if (moving && _player.rate == 0) [_player play];
+    else if (!moving && _player.rate != 0) [_player pause];
 }
 
 - (void)followArtwork:(UIImageView *)source {
@@ -146,7 +229,7 @@ static UIView *containerOf(UIView *header) {
 
 - (void)takeArtwork:(UIImageView *)source late:(BOOL)late {
     UIImage *image = source.image;
-    if (!image || _picture.image == image) return;
+    if (!image || _hasApplePhoto || _picture.image == image) return;
     _picture.image = image;
     // The page's field takes its colour from the same picture.
     SGRArtistSetArtwork(self, image);
@@ -271,6 +354,7 @@ static void applyHeader(UIView *header) {
     objc_setAssociatedObject(container, &kContainerHeightKey, @(rest), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     CGFloat bottom = rest - SGRHeaderInfoBottom - [info contentHeightForWidth:container.bounds.size.width] + SGRHeaderInfoTitleRise;
     applyHero(container, artwork, bottom);
+    [(SGRArtistHero *)objc_getAssociatedObject(container, &kHeroKey) findAppleArtworkFor:name];
 
     UIView *row = shuffle ?: play ?: follow;
     while (row && row.superview != header) row = row.superview;

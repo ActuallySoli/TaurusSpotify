@@ -65,18 +65,30 @@ static void logOnce(NSString *what) {
 
 // Unknown feed variants stay visible; only the episode carousel is a known grid to drop.
 static SGRHomeKind gridKind(UICollectionView *grid) {
-    if ([grid.accessibilityIdentifier isEqualToString:@"ActionCardCarouselElement"]) return SGRHomeKindDrop;
+    if ([grid.accessibilityIdentifier isEqualToString:@"ActionCardCarouselElement"]) {
+        return SGHidden(SGRKeyHomeShowPreviews) ? SGRHomeKindKeep : SGRHomeKindDrop;
+    }
+    if ([grid.accessibilityIdentifier isEqualToString:@"ContentEvaluationListCarouselElement"]) {
+        return SGHidden(SGRKeyHomeShowSuggestions) ? SGRHomeKindKeep : SGRHomeKindDrop;
+    }
     if (grid.accessibilityIdentifier.length) return SGRHomeKindPending;
+    SGRHomeKind shortcutsKind = SGHidden(SGRKeyHomeHideShortcuts) ? SGRHomeKindDrop : SGRHomeKindKeep;
     UIView *cell = grid.visibleCells.firstObject;
     // A grid the list sized before it laid its own cells out: nothing but the shortcuts has come as one.
-    if (!cell) return SGRHomeKindKeep;
-    return contentNames(cell.subviews.firstObject, @"Home_AnchorsAndShortcutsKit") ? SGRHomeKindKeep : SGRHomeKindPending;
+    if (!cell) return shortcutsKind;
+    return contentNames(cell.subviews.firstObject, @"Home_AnchorsAndShortcutsKit") ? shortcutsKind : SGRHomeKindPending;
 }
 
 // A LazyElementView names the element it will hold before it holds it.
 static SGRHomeKind stackKind(UIStackView *stack) {
     for (UIView *part in stack.arrangedSubviews) {
-        if ([NSStringFromClass(part.class) containsString:@"Discovery_DJElementKit"]) return SGRHomeKindKeep;
+        NSString *cls = NSStringFromClass(part.class);
+        if ([cls containsString:@"Discovery_DJElementKit"]) {
+            return SGHidden(SGRKeyHomeHideDJ) ? SGRHomeKindDrop : SGRHomeKindKeep;
+        }
+        if ([cls containsString:@"MediumCardAnimatingLayout"]) {
+            return SGHidden(SGRKeyHomeShowPreviews) ? SGRHomeKindKeep : SGRHomeKindDrop;
+        }
     }
     return SGRHomeKindPending;
 }
@@ -96,12 +108,17 @@ static SGRHomeKind kindOf(UIView *content, NSString **rootName) {
     UIView *root = content.subviews.firstObject.subviews.firstObject;
     if (!root) return SGRHomeKindPending;
     *rootName = NSStringFromClass(root.class);
+    if ([root.accessibilityIdentifier isEqualToString:@"ContentEvaluationListCarouselElement"]) {
+        return SGHidden(SGRKeyHomeShowSuggestions) ? SGRHomeKindKeep : SGRHomeKindDrop;
+    }
     static Class shelf;
     if (!shelf) shelf = NSClassFromString(@"_TtC16Home_CarouselKit29TouchCancellingCollectionView");
     if (shelf && [root isKindOfClass:shelf]) return SGRHomeKindKeep;
     if ([root isKindOfClass:UICollectionView.class]) return gridKind((UICollectionView *)root);
     if ([root isKindOfClass:UIStackView.class]) return stackKind((UIStackView *)root);
-    if ([NSStringFromClass(root.class) containsString:@"MediumCardAnimatingLayout"]) return SGRHomeKindDrop;
+    if ([NSStringFromClass(root.class) containsString:@"MediumCardAnimatingLayout"]) {
+        return SGHidden(SGRKeyHomeShowPreviews) ? SGRHomeKindKeep : SGRHomeKindDrop;
+    }
     return SGRHomeKindPending;
 }
 
@@ -181,6 +198,7 @@ BOOL SGRHomeSectionCollapsed(UIView *cell) {
         @"ios-home-evopage-impl.dj_mdc_beta_badge_enabled": @NO,
         // The prompt field for Spotify's AI on Home.
         @"ios-home-evopage-impl.interactive_entrypoint_enabled": @NO,
+        @"ios-musicvideos-shared-impl.disable_video_previews": @(!SGHidden(SGRKeyHomeShowPreviews)),
     });
     if (!SGRedesignedUI()) return;
     %init;

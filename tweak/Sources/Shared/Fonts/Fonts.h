@@ -8,6 +8,7 @@
 #define SGKeyAppFontFiles @"spotifyglass.font.files"
 #define SGKeyAppFontName @"spotifyglass.font.name"
 #define SGKeyAppFontFile @"spotifyglass.font.file"
+#define SGKeyAppFontCatalog @"spotifyglass.font.catalog"
 // The family chosen under More fonts, by its name ("Avenir Next").
 #define SGKeyAppFontFamily @"spotifyglass.font.family"
 
@@ -29,6 +30,7 @@ NSArray<NSString *> *SGAppFontFamilies(void);   // More fonts: the families this
 NSString *SGRegisterCustomFont(void);
 // The family name the faces share, or nil when they differ, one has none, or there are none.
 NSString *SGFontSingleFamily(NSArray<NSString *> *names);
+NSString *SGImportFontFiles(NSArray<NSURL *> *files, BOOL lyricsOnly, NSDictionary *catalogMetadata, NSError **error);
 
 // Opens Files to import a font family for the lyrics alone; `done` runs once the files are in or refused.
 void SGPickFontForLyrics(void (^done)(void));

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Taurus Downloads: patch Spotify 9.1.90 and build the companion library.
+"""Taurus Downloads: patch verified Spotify 9.1.90/9.1.94 builds and compile the companion.
 
     build_downloads.py <decrypted Spotify.ipa> --out-ipa <patched.ipa> --out-dylib <SpotifyAudioProbe.dylib>
 
 Three guarded edits to the executable (see the patch_*.py files), each checked against the exact bytes of the
-9.1.90 binary before anything is written, plus the companion library the tweak talks to. cyan injects the
+selected executable profile before anything is written, plus the companion library the tweak talks to. cyan injects the
 library afterwards, together with the tweak, so nothing is redirected here: Taurus's audio pipeline keeps the
 AudioToolbox imports it rebinds itself.
 
@@ -24,6 +24,7 @@ from zipfile import ZipFile
 from patch_native_restrictions import patch as patch_limits, guard_header, limits_header, layout
 from patch_key_request_mode import patch as patch_key_mode, key_header
 from patch_native_trace import patch as patch_native_trace, header as native_trace_header
+from native_profiles import profile_for_uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 UUID = bytes.fromhex("fbce22c17e1b3e0d9be866ff9291943e")
@@ -70,9 +71,13 @@ def main():
         except ValueError as error:
             print(f"downloads: {error}", file=sys.stderr)
             return UNSUPPORTED
-    if version != "9.1.90" or uuid != UUID:
-        print(f"downloads: Spotify {version} (UUID {uuid.hex() if uuid else '?'}) is not the 9.1.90 build the "
-              "download patches were verified against; building without Downloads.", file=sys.stderr)
+    try:
+        profile = profile_for_uuid(uuid)
+    except ValueError:
+        print(f"downloads: Spotify {version} (UUID {uuid.hex() if uuid else '?'}) is not a verified download build; building without Downloads.", file=sys.stderr)
+        return UNSUPPORTED
+    if version != profile.version:
+        print("downloads: Spotify version and executable UUID disagree; building without Downloads.", file=sys.stderr)
         return UNSUPPORTED
 
     patched, limits = patch_limits(native)
@@ -87,6 +92,7 @@ def main():
         "-isysroot", sdk, "-fobjc-arc", "-std=gnu11", "-O2", "-fvisibility=hidden",
         "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-nullability-completeness",
         "-Werror=implicit-function-declaration", "-I" + str(ROOT / "src"), "-DSAP_ENABLE_WAV_CAPTURE=0",
+        "-DSAP_SPOTIFY_9194=" + str(int(profile.version == "9.1.94")),
         *(ROOT / "src" / name for name in SOURCE_FILES),
         "-framework", "AudioToolbox", "-framework", "Foundation", "-framework", "UIKit",
         "-framework", "AVFAudio", "-framework", "CoreGraphics", "-framework", "AVFoundation",
@@ -104,7 +110,7 @@ def main():
         if check.testzip() is not None:
             raise RuntimeError("IPA ZIP integrity check failed")
     print(json.dumps({"output": str(args.out_ipa), "sha256": hashlib.sha256(args.out_ipa.read_bytes()).hexdigest(),
-                      "spotify_uuid": UUID.hex(), "native_limits": limits, "key_request_mode": key,
+                      "spotify_uuid": profile.uuid.hex(), "spotify_version": profile.version, "native_limits": limits, "key_request_mode": key,
                       "native_observation": trace}, indent=2))
     return 0
 

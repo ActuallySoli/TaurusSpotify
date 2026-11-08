@@ -12,6 +12,7 @@
 #import "Shared/Fonts/Fonts.h"
 #import "Shared/ListeningStats/ListeningStats.h"
 #import "Shared/Lossless/SGLossless.h"
+#import "Shared/Navigation/KeyCommands.h"
 #import "Shared/Player/PlayerSettings.h"
 #import "Native/Appearance/Appearance.h"
 #import "Native/Navbar/Navbar.h"
@@ -104,8 +105,8 @@ UIViewController *SGAppearanceSettingsPage(void) {
         } else {
             [rows addObjectsFromArray:SGNativeAppearanceRows()];
         }
-        [rows addObjectsFromArray:SGAppFontRows()];
     }
+    [rows addObjectsFromArray:SGAppFontRows()];
     [rows addObject:sidebarBadgeTextRow()];
     SGModSection *section = SGNotedSection(nil, rows, @"Some changes apply after you restart Spotify.");
     return [[SGModPage alloc] initWithTitle:@"Appearance" intro:nil sections:@[section] footer:nil];
@@ -125,10 +126,11 @@ UIViewController *SGLyricsSettingsPage(void) {
         SGModRow *landscape = SGSwitchRow(@"Landscape lyrics", @"Show lyrics beside the player controls", SGRKeyLandscapeLyrics);
         landscape.changed = ^(BOOL on) { SGRPlayerLyricsOrientationChanged(); };
         [sections addObject:SGSection(@"Display", @[landscape,
-            SGLyricsWordTimingRow(), SGLyricsRomanisedRow(), SGLyricsDelayRow(),
+            SGLyricsWordTimingRow(), SGLyricsRomanisedRow(), SGLyricsPronunciationScriptRow(), SGRLyricsFuriganaRow(), SGLyricsDelayRow(),
             SGRLyricsTextSizesRow(), SGLyricsTranslationLanguageRow(), SGLyricsMeaningsRow(), SGLyricsMeaningMarkersRow()])];
         [sections addObject:SGSection(@"Translation", @[SGTranslateEverySongRow(), SGGeminiKeyRow(), SGSavedTranslationsRow()])];
     }
+    [sections addObject:SGLyricsOfflineCacheSection()];
     [sections addObject:SGSection(nil, more)];
     // The redesign's page leads with a live preview of the lyrics, a glass pill to search the song it plays,
     // the presets and the sliders and font behind the Adjust button; every change applies to the app's lyrics at once.
@@ -147,6 +149,7 @@ UIViewController *SGPlayerSettingsPage(void) {
     NSMutableArray<SGModSection *> *sections = [NSMutableArray arrayWithObject:SGSection(nil, @[
         SGWithSymbol(SGPageRow(@"Gestures", ^UIViewController *{ return SGGesturesSettingsPage(); }), @"hand.tap"),
         SGWithSymbol(blocked, @"person.crop.circle.badge.xmark"),
+        SGWithSymbol(SGKeyboardShortcutsRow(), @"command"),
     ])];
     NSMutableArray<SGModRow *> *pages = [NSMutableArray array];
     if (native) {

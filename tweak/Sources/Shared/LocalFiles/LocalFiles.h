@@ -58,3 +58,10 @@ void SGLocalFilePresentEditor(UIViewController *presenter, NSString *uri);
 // cover picked in Edit info, and until one is found. Main thread.
 @class SPTPlayerTrack;
 UIImage *SGLocalFileFallbackCover(SPTPlayerTrack *track);
+
+#define SGKeyLocalFilesPage @"spotifyglass.localfiles.page"
+#define SGKeyLocalFilesSuggest @"spotifyglass.localfiles.suggest"
+#define SGKeyLocalFilesAnimatedOffline @"spotifyglass.localfiles.animatedOffline"
+
+UIViewController *SGLocalFilesSettingsPage(void);
+UIViewController *SGYourFilesBrowserPage(void);

@@ -1,6 +1,7 @@
 // Presets and headphones, the two rows under the effects' switch on the Audio effects page.
 //
-//     AudioEffectsPresets.m       the built-in presets, the user's own, and the GraphicEQ line check
+//     AudioEffectsPresets.m       the built-in presets, the user's own, sharing them as files, and the
+//                                 GraphicEQ line check
 //     AutoEq.m                    AutoEq's index of headphones, cached, and a headphone's GraphicEQ applied
 //     AudioEffectsPresetsPage.m   their pages
 //
@@ -25,6 +26,33 @@ NSArray<NSString *> *SGDSPUserPresetNames(void);   // sorted
 void SGDSPSaveUserPreset(NSString *name);          // replaces one of the same name
 BOOL SGDSPLoadUserPreset(NSString *name);
 void SGDSPDeleteUserPreset(NSString *name);
+
+// A "no silent overwrite" hint: the first of "Name", "Name (2)", "Name (3)"… not one of the user's presets
+// yet.
+NSString *SGDSPPresetUniqueName(NSString *name);
+
+#pragma mark - sharing
+
+// A preset shared as its own JSON file: {"type": "spotifyglass.audio-preset", "version": 1, "name",
+// "values"}, `values` only spotifyglass.dsp.* keys this build's import accepts. No other setting, and the
+// master switch is not a preset key in the first place.
+#define SGDSPPresetShareType   @"spotifyglass.audio-preset"
+#define SGDSPPresetShareVersion 1
+
+// One of the user's presets as its share file, nil when it is not one. Keys a later build would save but
+// this one cannot check are left out, so the file carries what this build can vouch for. Any thread.
+NSDictionary<NSString *, id> *SGDSPPresetShareFile(NSString *name);
+
+// A parsed share file checked before anything touches the defaults: the type and version exact, the name
+// trimmed and at most 64 characters, `values` a bounded dictionary whose known keys get the kind of value
+// they take and whose numbers and gains are clamped to what the effects themselves allow the way the page's
+// own edits are, keys it does not know dropped. NO when something is wrong with what is left, and `why`
+// says what; otherwise `name` and `values` are the preset to save with SGDSPSavePresetValues. Any thread.
+BOOL SGDSPPresetFromFile(id file, NSString **name, NSDictionary<NSString *, id> **values, NSString **why);
+
+// A checked file's values saved as one of the user's presets under `name`, replacing one of the same name,
+// without loading it. The caller validates first: nothing here checks.
+void SGDSPSavePresetValues(NSString *name, NSDictionary<NSString *, id> *values);
 
 // The text as one GraphicEQ line, trimmed and on one line, or nil when it is not one: what the Graphic EQ
 // editor saves and what a headphone's file is checked with.
@@ -87,3 +115,9 @@ BOOL SGAutoEqOutputRemembered(NSString *uid);
 void SGAutoEqForgetOutput(NSString *uid);
 // The remembered outputs, sorted by name: {uid, name, path}.
 NSArray<NSDictionary<NSString *, NSString *> *> *SGAutoEqRememberedOutputs(void);
+
+#define SGKeyDSPPresetOutputs @"spotifyglass.dsp.outputs"
+#define SGKeyDSPPresetOutputsRestore @"spotifyglass.dsp.outputs.restore"
+BOOL SGDSPPresetOutputRemembered(NSString *uid);
+void SGDSPRememberPresetOutput(BOOL remember);
+void SGDSPRecordOutputPresetPick(NSString *presetName, NSInteger builtInIndex);

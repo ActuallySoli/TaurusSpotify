@@ -1,3 +1,4 @@
+#import "NativeRestrictionsPatch.h"
 #import "Localization.h"
 #import "SupportLog.h"
 #import "DownloadCompatibility.h"
@@ -301,7 +302,7 @@ static NSDictionary *SAPCompleteDiagnosticSnapshot(NSDictionary *native) {
     NSArray *ports = [AVAudioSession.sharedInstance.currentRoute.outputs valueForKey:@"portName"];
     NSString *route = [ports componentsJoinedByString:@", "];
     NSDictionary *report = @{
-        @"probe_version": @26,@"pixie_build":@"9.1.90-v1.2",@"wav_capture_supported":@(SAP_ENABLE_WAV_CAPTURE),@"diagnostics_enabled":@(SAPDiagnosticsEnabled()), @"backend_ready": @(s.backendReady), @"pcm_confirmed": @(s.pcmConfirmed),
+        @"probe_version": @26,@"pixie_build":@SAPNativeBuildVersion "-v1.2",@"wav_capture_supported":@(SAP_ENABLE_WAV_CAPTURE),@"diagnostics_enabled":@(SAPDiagnosticsEnabled()), @"backend_ready": @(s.backendReady), @"pcm_confirmed": @(s.pcmConfirmed),
         @"au_set_calls": @(s.setPropertyCalls), @"au_callback_attempts": @(s.callbackAttempts),
         @"au_last_scope": @(s.lastCallbackScope), @"au_last_type": fourcc(s.lastComponentType),
         @"au_last_element": @(s.lastCallbackElement), @"au_last_subtype": fourcc(s.lastComponentSubtype),

@@ -60,6 +60,34 @@ SGModRow *SGLyricsRomanisedRow(void) {
     return row;
 }
 
+SGModRow *SGLyricsPronunciationScriptRow(void) {
+    SGModRow *row = SGChoiceRow(@"Pronunciation script", nil, SGKeyLyricsPronunciationScript, @[@"Latin", @"Hangul"], 0);
+    row.choiceFooter = @"The alphabet used for pronunciation lines under lyrics.";
+    row.chosen = ^(NSInteger index) {
+        [NSNotificationCenter.defaultCenter postNotificationName:SGLyricsRomanisedDidChangeNotification object:nil];
+    };
+    return row;
+}
+
+SGModRow *SGRLyricsFuriganaRow(void) {
+    SGModRow *row = SGOptionRow(@"Furigana", @"Kana readings above Kanji words in Japanese lyrics", SGRKeyLyricsFurigana);
+    row.changed = ^(BOOL on) {
+        [NSNotificationCenter.defaultCenter postNotificationName:SGLyricsFuriganaDidChangeNotification object:nil];
+    };
+    return row;
+}
+
+SGModSection *SGLyricsOfflineCacheSection(void) {
+    SGModRow *saveRow = SGOptionRow(@"Save lyrics offline", @"Keep fetched lyrics on disk for offline playback", SGKeyLyricsCache);
+    SGModRow *clearRow = SGStatActionRow(@"Saved lyrics", @"Tap to clear saved lyrics", ^NSString *{
+        NSUInteger count = SGLyricsCachedTrackCount();
+        return count ? [NSString stringWithFormat:@"%lu %@", (unsigned long)count, count == 1 ? @"song" : @"songs"] : @"None";
+    }, ^{
+        SGLyricsClearCache();
+    });
+    return SGSection(@"Offline", @[saveRow, clearRow]);
+}
+
 // Read wherever lines are timed, so it applies as the thumb moves.
 SGModRow *SGLyricsDelayRow(void) {
     return SGSliderRow(@"Delay", nil, 0, 1000, 25, ^double { return SGKaraokeDelayMs(); },

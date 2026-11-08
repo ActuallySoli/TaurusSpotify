@@ -10,6 +10,7 @@
 #import "Core/SGCore.h"
 #import "Core/SGURLSession.h"
 #import "AdBlock.h"
+#import "Shared/Jam/Jam.h"
 
 static BOOL ads, premium;
 static NSDate *started;
@@ -84,7 +85,7 @@ static BOOL isAd(NSURL *url, NSString *path) {
 static BOOL isRefetch(NSString *path) {
     return has(path, @"signup/public") || has(path, @"select-ondemand-set") || has(path, @"trials-facade/start-trial")
         || has(path, @"premium-marketing/upselloffer") || (has(path, @"pendragon") && has(path, @"fetchmessagelist"))
-        || has(path, @"pushka-tokens") || has(path, @"apresolve") || has(path, @"pses/screenconfig") || isCustomize(path);
+        || has(path, @"pushka-tokens") || has(path, @"apresolve") || has(path, @"pses/screenconfig");
 }
 
 static SGNet classify(NSURL *url) {
@@ -171,6 +172,7 @@ static BOOL holds(NSURLSessionTask *task, NSData *data) {
 }
 
 static void complete(id<NSURLSessionDataDelegate> delegate, NSURLSession *session, NSURLSessionTask *task, NSError *error, void (^finish)(NSError *)) {
+    SGJamObserveError(task, error);
     NSURL *url = SGURLSessionTaskURL(task);
     NSString *path = url.path.lowercaseString ?: @"";
     NSMutableData *buffer = objc_getAssociatedObject(task, &kBufferKey);
@@ -209,11 +211,13 @@ static void complete(id<NSURLSessionDataDelegate> delegate, NSURLSession *sessio
 
 %hook SPTDataLoaderService
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition))handler {
+    SGJamObserveResponse(task, response);
     NSHTTPURLResponse *replay = replayFor(task, response);
     %orig(session, task, replay ?: response, handler);
     if (replay) deliver((id)self, session, task, cached());
 }
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data {
+    SGJamObserveData(task, data);
     if (!holds(task, data)) %orig;
 }
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
@@ -223,11 +227,13 @@ static void complete(id<NSURLSessionDataDelegate> delegate, NSURLSession *sessio
 
 %hook _TtC26Connectivity_HttpClientKit20HttpClientURLSession
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition))handler {
+    SGJamObserveResponse(task, response);
     NSHTTPURLResponse *replay = replayFor(task, response);
     %orig(session, task, replay ?: response, handler);
     if (replay) deliver((id)self, session, task, cached());
 }
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data {
+    SGJamObserveData(task, data);
     if (!holds(task, data)) %orig;
 }
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
@@ -240,6 +246,7 @@ static void complete(id<NSURLSessionDataDelegate> delegate, NSURLSession *sessio
 // body. Spoof Premium's rules stay off this path, and a failed request keeps its error.
 %hook SPTCoreURLSessionDataDelegate
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition))handler {
+    SGJamObserveResponse(task, response);
     NSURL *url = SGURLSessionTaskURL(task);
     if (ads && isAd(url, url.path.lowercaseString ?: @"")) {
         objc_setAssociatedObject(task, &kCoreAdKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -248,6 +255,7 @@ static void complete(id<NSURLSessionDataDelegate> delegate, NSURLSession *sessio
     %orig(session, task, response, handler);
 }
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data {
+    SGJamObserveData(task, data);
     if (!objc_getAssociatedObject(task, &kCoreAdKey) || objc_getAssociatedObject(task, &kPassKey)) %orig;
 }
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
@@ -257,6 +265,7 @@ static void complete(id<NSURLSessionDataDelegate> delegate, NSURLSession *sessio
         SGLog(@"answered the core's %@ empty", SGURLSessionTaskURL(task).path);
         deliver((id)self, session, task, [NSData data]);
     }
+    SGJamObserveError(task, error);
     %orig;
 }
 %end
@@ -273,7 +282,7 @@ static void complete(id<NSURLSessionDataDelegate> delegate, NSURLSession *sessio
     NSString *host = url.host.lowercaseString ?: @"", *path = url.path.lowercaseString ?: @"";
     BOOL spotify = has(host, @"spotify") || has(host, @"spclient");
     if (spotify && elapsed() > 30 && (has(path, @"deletetoken") || has(path, @"signup/public") || has(path, @"pses/screenconfig")
-                                      || isCustomize(path) || has(host, @"apresolve"))) {
+                                      || has(host, @"apresolve"))) {
         SGAdBlockSawOne(@"Requests");
         SGAdBlockCountOne(@"Requests");
         SGLog(@"canceled %@%@ before it left", host, path);

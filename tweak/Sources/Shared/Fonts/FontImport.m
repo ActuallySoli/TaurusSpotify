@@ -4,10 +4,12 @@
 // Fonts.x registers the files again on each launch.
 #import <CoreText/CoreText.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <objc/runtime.h>
 #import "Core/SGCore.h"
 #import "Settings/SGModPage.h"
 #import "Settings/SGPageStyle.h"
 #import "Shared/Fonts/Fonts.h"
+#import "Shared/Fonts/FontCatalog.h"
 
 static NSURL *fontFolder(void) {
     NSURL *support = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
@@ -82,7 +84,9 @@ static void removeImported(void) {
         CTFontManagerUnregisterFontsForURL((__bridge CFURLRef)url, kCTFontManagerScopeProcess, NULL);
         [NSFileManager.defaultManager removeItemAtURL:url error:nil];
     }
-    for (NSString *key in @[SGKeyAppFontFiles, SGKeyAppFontName]) [store removeObjectForKey:key];
+    NSString *license = [store dictionaryForKey:SGKeyAppFontCatalog][@"licenseFile"];
+    if (license.length) [NSFileManager.defaultManager removeItemAtURL:[fontFolder() URLByAppendingPathComponent:license.lastPathComponent] error:nil];
+    for (NSString *key in @[SGKeyAppFontFiles, SGKeyAppFontName, SGKeyAppFontCatalog]) [store removeObjectForKey:key];
     if (SGAppFontChosen() == SGAppFontCustom) SGSetInt(SGKeyAppFont, SGAppFontSpotify);
 }
 
@@ -99,12 +103,10 @@ static void tell(NSString *title, NSString *message, BOOL restart) {
 
 // The files are checked and copied aside before the ones in use are touched, so files Core Text will not read,
 // of more than one family, or that fail to copy change nothing.
-static BOOL sg_lyricsOnly;   // an import for the lyrics' font alone leaves the app's font as it is
-
-static void import(NSArray<NSURL *> *picked) {
+NSString *SGImportFontFiles(NSArray<NSURL *> *picked, BOOL lyricsOnly, NSDictionary *catalogMetadata, NSError **error) {
     NSMutableArray<NSURL *> *scoped = [NSMutableArray array];
     NSMutableArray<NSString *> *families = [NSMutableArray array];
-    BOOL fonts = YES;
+    BOOL fonts = picked.count > 0;
     for (NSURL *url in picked) {
         if ([url startAccessingSecurityScopedResource]) [scoped addObject:url];
         NSArray<NSString *> *names = familiesIn(url);
@@ -113,46 +115,86 @@ static void import(NSArray<NSURL *> *picked) {
     }
     NSString *family = fonts ? SGFontSingleFamily(families) : nil;
     NSFileManager *files = NSFileManager.defaultManager;
-    NSURL *incoming = [fontFolder() URLByAppendingPathComponent:@"Incoming" isDirectory:YES];
-    NSMutableArray<NSString *> *copied = [NSMutableArray array];
-    if (family) {
-        [files removeItemAtURL:incoming error:nil];
-        [files createDirectoryAtURL:incoming withIntermediateDirectories:YES attributes:nil error:nil];
+    NSString *failure = !fonts ? @"Choose valid .ttf, .otf, .ttc or .otc font files."
+        : !family ? @"These files are more than one family. Pick the files of one family together." : nil;
+    if (catalogMetadata && ![family isEqualToString:catalogMetadata[@"family"]]) failure = @"The downloaded file is not the expected font family.";
+    NSString *prefix = NSUUID.UUID.UUIDString;
+    NSMutableArray<NSURL *> *copied = [NSMutableArray array], *registered = [NSMutableArray array];
+    NSURL *licenseURL = nil;
+    if (!failure && ![files createDirectoryAtURL:fontFolder() withIntermediateDirectories:YES attributes:nil error:nil]) failure = @"The font folder could not be created.";
+    if (!failure) {
         for (NSURL *url in picked) {
-            NSString *file = url.lastPathComponent;
-            if ([files copyItemAtURL:url toURL:[incoming URLByAppendingPathComponent:file] error:nil]) [copied addObject:file];
+            NSURL *target = [fontFolder() URLByAppendingPathComponent:[NSString stringWithFormat:@"%@-%lu-%@", prefix, (unsigned long)copied.count, url.lastPathComponent]];
+            [copied addObject:target];
+            if (![files copyItemAtURL:url toURL:target error:nil]) { failure = @"The font could not be copied. Your current font was kept."; break; }
         }
     }
     for (NSURL *url in scoped) [url stopAccessingSecurityScopedResource];
-    NSUserDefaults *store = NSUserDefaults.standardUserDefaults;
-    if (family && copied.count == picked.count) {
-        removeImported();
-        for (NSString *file in copied) {
-            NSURL *target = [fontFolder() URLByAppendingPathComponent:file];
-            [files removeItemAtURL:target error:nil];
-            [files moveItemAtURL:[incoming URLByAppendingPathComponent:file] toURL:target error:nil];
+    if (!failure) {
+        NSMutableArray<NSString *> *copiedFamilies = [NSMutableArray array];
+        for (NSURL *url in copied) {
+            NSArray<NSString *> *names = familiesIn(url);
+            if (!names.count) { failure = @"The copied file is not a valid font. Your current font was kept."; break; }
+            [copiedFamilies addObjectsFromArray:names];
         }
-        [files removeItemAtURL:incoming error:nil];
-        [store setObject:copied forKey:SGKeyAppFontFiles];
-        [store setObject:family forKey:SGKeyAppFontName];
-        if (SGRegisterCustomFont()) {
-            if (sg_lyricsOnly) {
-                tell(@"Font imported", [NSString stringWithFormat:@"%@ is in the lyrics' Font list.", family], NO);
-                return;
-            }
-            SGSetInt(SGKeyAppFont, SGAppFontCustom);
-            tell(@"Font imported", [NSString stringWithFormat:@"%@ becomes the app's font when Spotify starts again.", family], YES);
-            return;
-        }
+        if (!failure && ![family isEqualToString:SGFontSingleFamily(copiedFamilies)]) failure = @"The font changed while it was being imported. Your current font was kept.";
     }
-    [files removeItemAtURL:incoming error:nil];
-    if (family && copied.count == picked.count) removeImported();   // copied in but Core Text took none of it
-    tell(@"Font not imported", fonts && !family ? @"These files are more than one family. Pick the files of one family together."
-                                               : @"Choose valid .ttf, .otf, .ttc or .otc font files.", NO);
+    if (!failure && catalogMetadata) {
+        licenseURL = [fontFolder() URLByAppendingPathComponent:[prefix stringByAppendingString:@"-OFL.txt"]];
+        if (![catalogMetadata[@"licenseText"] writeToURL:licenseURL atomically:YES encoding:NSUTF8StringEncoding error:nil]) failure = @"The font license could not be saved. Your current font was kept.";
+    }
+    if (!failure) {
+        for (NSURL *url in copied) {
+            CFErrorRef fontError = NULL;
+            if (CTFontManagerRegisterFontsForURL((__bridge CFURLRef)url, kCTFontManagerScopeProcess, &fontError)) [registered addObject:url];
+            else {
+                NSError *registrationError = CFBridgingRelease(fontError);
+                BOOL duplicate = [registrationError.domain isEqualToString:(__bridge NSString *)kCTFontManagerErrorDomain]
+                    && (registrationError.code == kCTFontManagerErrorAlreadyRegistered || registrationError.code == kCTFontManagerErrorDuplicatedName);
+                if (!duplicate) { failure = @"Core Text could not register this font. Your current font was kept."; break; }
+            }
+        }
+        if (!failure && ![UIFont fontNamesForFamilyName:family].count) failure = @"The font has no usable styles. Your current font was kept.";
+    }
+    if (failure) {
+        for (NSURL *url in registered) CTFontManagerUnregisterFontsForURL((__bridge CFURLRef)url, kCTFontManagerScopeProcess, NULL);
+        for (NSURL *url in copied) [files removeItemAtURL:url error:nil];
+        if (licenseURL) [files removeItemAtURL:licenseURL error:nil];
+        if (error) *error = [NSError errorWithDomain:@"spoti.pw.fonts" code:2 userInfo:@{NSLocalizedDescriptionKey: failure}];
+        return nil;
+    }
+    NSUserDefaults *store = NSUserDefaults.standardUserDefaults;
+    NSArray<NSURL *> *previousFiles = storedFiles();
+    NSString *previousLicense = [store dictionaryForKey:SGKeyAppFontCatalog][@"licenseFile"];
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (NSURL *url in copied) [names addObject:url.lastPathComponent];
+    [store setObject:names forKey:SGKeyAppFontFiles];
+    [store setObject:family forKey:SGKeyAppFontName];
+    if (catalogMetadata) {
+        NSMutableDictionary *metadata = [catalogMetadata mutableCopy];
+        metadata[@"licenseFile"] = licenseURL.lastPathComponent;
+        [store setObject:metadata forKey:SGKeyAppFontCatalog];
+    } else [store removeObjectForKey:SGKeyAppFontCatalog];
+    if (!lyricsOnly) SGSetInt(SGKeyAppFont, SGAppFontCustom);
+    for (NSURL *url in previousFiles) [files removeItemAtURL:url error:nil];
+    if (previousLicense.length) [files removeItemAtURL:[fontFolder() URLByAppendingPathComponent:previousLicense.lastPathComponent] error:nil];
+    return family;
+}
+
+static void importPicked(NSArray<NSURL *> *picked, BOOL lyricsOnly) {
+    NSError *error = nil;
+    NSString *family = SGImportFontFiles(picked, lyricsOnly, nil, &error);
+    if (family) {
+        if (lyricsOnly) tell(@"Font imported", [NSString stringWithFormat:@"%@ is in the lyrics' Font list.", family], NO);
+        else tell(@"Font imported", [NSString stringWithFormat:@"%@ becomes the app's font when Spotify starts again.", family], YES);
+    } else {
+        tell(@"Font not imported", error.localizedDescription, NO);
+    }
 }
 
 @interface SGFontPicker : NSObject <UIDocumentPickerDelegate>
 @property (nonatomic, copy) void (^done)(void);   // the page's refresh, once the files are in or refused
+@property (nonatomic) BOOL lyricsOnly;
 @end
 
 @implementation SGFontPicker
@@ -160,18 +202,24 @@ static void import(NSArray<NSURL *> *picked) {
 - (void)documentPicker:(UIDocumentPickerViewController *)picker didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     // The alert waits for the picker to be gone, or it has nothing to present over.
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (urls.count) import(urls);
+        if (urls.count) importPicked(urls, self.lyricsOnly);
         if (self.done) self.done();
     });
 }
 
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)picker {
+    if (self.done) self.done();
+}
+
 @end
 
-static void pickFont(void (^done)(void)) {
-    static SGFontPicker *delegate;
-    if (!delegate) delegate = [SGFontPicker new];
+static void pickFont(BOOL lyricsOnly, void (^done)(void)) {
+    static char delegateKey;
+    SGFontPicker *delegate = [SGFontPicker new];
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFont] asCopy:YES];
+    delegate.lyricsOnly = lyricsOnly;
     delegate.done = done;
+    objc_setAssociatedObject(picker, &delegateKey, delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     picker.delegate = delegate;
     picker.allowsMultipleSelection = YES;
     [SGTopController() presentViewController:picker animated:YES completion:nil];
@@ -179,11 +227,7 @@ static void pickFont(void (^done)(void)) {
 
 // The Lyrics page's Import: the same picker and checks, without making the font the app's.
 void SGPickFontForLyrics(void (^done)(void)) {
-    sg_lyricsOnly = YES;
-    pickFont(^{
-        sg_lyricsOnly = NO;
-        if (done) done();
-    });
+    pickFont(YES, done);
 }
 
 #pragma mark - the page
@@ -220,7 +264,23 @@ static NSString *chosenLabel(void) {
     return SGAppFontNames()[font];
 }
 
-typedef NS_ENUM(NSInteger, SGFontSection) { SGFontBuiltIn, SGFontMore, SGFontYours };
+typedef NS_ENUM(NSInteger, SGFontSection) { SGFontBuiltIn, SGFontMore, SGFontCatalog, SGFontYours };
+
+@interface SGFontLicensePage : SGPage
+@property (nonatomic, copy) NSString *licenseText;
+@end
+
+@implementation SGFontLicensePage
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Font license";
+    self.tableView.tableHeaderView = SGNote(self.licenseText);
+}
+- (void)viewWillLayoutSubviews {
+    [super viewWillLayoutSubviews];
+    SGFitNote(self.tableView, self.tableView.tableHeaderView, 8, 24);
+}
+@end
 
 @interface SGFontPage : SGPage
 @end
@@ -228,6 +288,7 @@ typedef NS_ENUM(NSInteger, SGFontSection) { SGFontBuiltIn, SGFontMore, SGFontYou
 @implementation SGFontPage {
     NSArray<NSString *> *_families;
     UIView *_footer;
+    SGFontCatalogEntry *_downloading;
 }
 
 - (instancetype)init {
@@ -240,10 +301,11 @@ typedef NS_ENUM(NSInteger, SGFontSection) { SGFontBuiltIn, SGFontMore, SGFontYou
 
 // A one-face import says why bold comes out regular; otherwise the note says how to bring the bold along.
 - (void)refreshFooter {
-    NSString *own = self.styleCount == 1
+    BOOL variable = [[NSUserDefaults.standardUserDefaults dictionaryForKey:SGKeyAppFontCatalog][@"variable"] boolValue];
+    NSString *own = variable ? @"This imported font has variable weights: one file can include regular and bold. " : self.styleCount == 1
         ? @"A font of your own is a .ttf or .otf file from Files. This one has a single style, so bold text comes out regular. Pick all the files of a family together to keep bold. "
         : @"A font of your own comes from Files: a .ttf or .otf file, or all the files of one family picked together, so bold and italic stay. ";
-    _footer = SGNote([own stringByAppendingString:@"Text Spotify draws itself may keep its own font. Changes apply after you restart Spotify."]);
+    _footer = SGNote([own stringByAppendingString:@"Curated fonts download only when you choose Download and use, replacing your imported family. Each includes its SIL Open Font License. Text Spotify draws itself may keep its own font. Changes apply after you restart Spotify."]);
     self.tableView.tableFooterView = _footer;
 }
 
@@ -279,17 +341,18 @@ typedef NS_ENUM(NSInteger, SGFontSection) { SGFontBuiltIn, SGFontMore, SGFontYou
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)table {
-    return 3;
+    return 4;
 }
 
 - (NSInteger)tableView:(UITableView *)table numberOfRowsInSection:(NSInteger)section {
     if (section == SGFontBuiltIn) return (NSInteger)SGAppFontNames().count;
     if (section == SGFontMore) return (NSInteger)_families.count;
+    if (section == SGFontCatalog) return (NSInteger)SGFontCatalogEntries().count;
     return self.importedName.length ? 2 : 1;
 }
 
 - (UIView *)tableView:(UITableView *)table viewForHeaderInSection:(NSInteger)section {
-    return section == SGFontBuiltIn ? nil : SGSectionHeader(table, section == SGFontMore ? @"More fonts" : @"Your fonts");
+    return section == SGFontBuiltIn ? nil : SGSectionHeader(table, section == SGFontMore ? @"More fonts" : section == SGFontCatalog ? @"Curated fonts" : @"Your fonts");
 }
 
 - (CGFloat)tableView:(UITableView *)table heightForHeaderInSection:(NSInteger)section {
@@ -298,9 +361,35 @@ typedef NS_ENUM(NSInteger, SGFontSection) { SGFontBuiltIn, SGFontMore, SGFontYou
 
 - (UITableViewCell *)tableView:(UITableView *)table cellForRowAtIndexPath:(NSIndexPath *)path {
     UITableViewCell *cell = SGDequeueCell(table, @"font");
+    cell.userInteractionEnabled = !_downloading;
+    cell.contentView.alpha = _downloading ? 0.45 : 1;
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    UIAccessibilityTraits disabled = _downloading ? UIAccessibilityTraitNotEnabled : 0;
     CGFloat size = SGTitleFont().pointSize;
     NSUserDefaults *store = NSUserDefaults.standardUserDefaults;
     SGAppFont chosen = SGAppFontChosen();
+    if (path.section == SGFontCatalog) {
+        SGFontCatalogEntry *entry = SGFontCatalogEntries()[(NSUInteger)path.row];
+        NSDictionary *metadata = [store dictionaryForKey:SGKeyAppFontCatalog];
+        BOOL installed = [metadata[@"sha256"] isEqualToString:entry.sha256] && [self.importedName isEqualToString:entry.family];
+        NSString *detail = entry == _downloading ? @"Downloading and verifying…"
+            : [NSString stringWithFormat:@"%@ · %@ · %@", entry.detail,
+               [NSByteCountFormatter stringFromByteCount:(int64_t)entry.byteCount countStyle:NSByteCountFormatterCountStyleFile], installed ? @"Imported" : @"Download"];
+        SGFillCell(cell, entry.family, detail, nil, nil);
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        if (entry == _downloading) {
+            cell.contentView.alpha = 1;
+            cell.accessoryType = UITableViewCellAccessoryNone;
+            UIActivityIndicatorView *progress = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+            progress.color = SGGreen();
+            progress.isAccessibilityElement = NO;
+            [progress startAnimating];
+            cell.accessoryView = progress;
+        }
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        cell.accessibilityTraits = UIAccessibilityTraitButton | disabled;
+        return cell;
+    }
     NSString *title, *subtitle = nil;
     UIFont *font;
     BOOL selected;
@@ -316,11 +405,12 @@ typedef NS_ENUM(NSInteger, SGFontSection) { SGFontBuiltIn, SGFontMore, SGFontYou
         title = self.importedName;
         font = previewFont(title, YES, size);
         selected = chosen == SGAppFontCustom;
-        subtitle = [NSString stringWithFormat:@"%lu style%@", (unsigned long)self.styleCount, self.styleCount == 1 ? @"" : @"s"];
+        subtitle = [[store dictionaryForKey:SGKeyAppFontCatalog][@"variable"] boolValue] ? @"Variable weights"
+            : [NSString stringWithFormat:@"%lu style%@", (unsigned long)self.styleCount, self.styleCount == 1 ? @"" : @"s"];
     } else {
         SGFillCell(cell, @"Add a font file", nil, SGGreen(), nil);
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-        cell.accessibilityTraits = UIAccessibilityTraitButton;
+        cell.accessibilityTraits = UIAccessibilityTraitButton | disabled;
         return cell;
     }
     SGFillCell(cell, title, subtitle, nil, nil);
@@ -333,30 +423,71 @@ typedef NS_ENUM(NSInteger, SGFontSection) { SGFontBuiltIn, SGFontMore, SGFontYou
         tick.tintColor = SGGreen();
         cell.accessoryView = tick;
     }
-    cell.accessibilityTraits = selected ? UIAccessibilityTraitButton | UIAccessibilityTraitSelected : UIAccessibilityTraitButton;
+    cell.accessibilityTraits = (selected ? UIAccessibilityTraitButton | UIAccessibilityTraitSelected : UIAccessibilityTraitButton) | disabled;
     return cell;
 }
 
 - (void)tableView:(UITableView *)table didSelectRowAtIndexPath:(NSIndexPath *)path {
     [table deselectRowAtIndexPath:path animated:YES];
+    if (_downloading) return;
     if (path.section == SGFontBuiltIn) {
         SGSetInt(SGKeyAppFont, path.row);
     } else if (path.section == SGFontMore) {
         [NSUserDefaults.standardUserDefaults setObject:_families[(NSUInteger)path.row] forKey:SGKeyAppFontFamily];
         SGSetInt(SGKeyAppFont, SGAppFontFamily);
+    } else if (path.section == SGFontCatalog) {
+        [self showCatalogEntry:SGFontCatalogEntries()[(NSUInteger)path.row] at:path];
+        return;
     } else if (path.row == 0 && self.importedName.length) {
         SGSetInt(SGKeyAppFont, SGAppFontCustom);
     } else {
         __weak SGFontPage *page = self;
-        pickFont(^{ [page refresh]; });
+        pickFont(NO, ^{ [page refresh]; });
         return;
     }
     [table reloadData];
 }
 
+- (void)showCatalogEntry:(SGFontCatalogEntry *)entry at:(NSIndexPath *)path {
+    NSString *message = [NSString stringWithFormat:@"%@ · %@\nSIL Open Font License 1.1\nReplaces your imported font. Restart Spotify to apply it.", entry.detail,
+        [NSByteCountFormatter stringFromByteCount:(int64_t)entry.byteCount countStyle:NSByteCountFormatterCountStyleFile]];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:entry.family message:message preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak SGFontPage *weakPage = self;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Download and use" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        SGFontPage *page = weakPage;
+        if (!page || page->_downloading) return;
+        page->_downloading = entry;
+        [page refresh];
+        UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, [NSString stringWithFormat:@"Downloading %@.", entry.family]);
+        SGDownloadCatalogFont(entry, ^(NSURL *file, NSError *error) {
+            SGFontPage *current = weakPage;
+            NSString *family = nil;
+            if (file && current) family = SGImportFontFiles(@[file], NO, entry.metadata, &error);
+            if (file) [NSFileManager.defaultManager removeItemAtURL:file.URLByDeletingLastPathComponent error:nil];
+            if (!current) return;
+            current->_downloading = nil;
+            [current refresh];
+            if (family) tell(@"Font imported", [NSString stringWithFormat:@"%@ becomes the app's font when Spotify starts again.", family], YES);
+            else tell(@"Font not imported", [NSString stringWithFormat:@"%@\nChoose the font again to retry.", error.localizedDescription ?: @"Your current font was kept."], NO);
+        });
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"View source on Google Fonts" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { SGOpenURL(entry.sourceURL.absoluteString); }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Read license" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        SGFontLicensePage *license = [SGFontLicensePage new];
+        license.licenseText = entry.licenseText;
+        SGShowPage(weakPage, license);
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Open license source" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { SGOpenURL(entry.licenseURL.absoluteString); }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:path];
+    sheet.popoverPresentationController.sourceView = cell ?: self.tableView;
+    sheet.popoverPresentationController.sourceRect = cell ? cell.bounds : [self.tableView rectForRowAtIndexPath:path];
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
 // Swiping the imported family away deletes its files; Default comes back if it was the choice.
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)table trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)path {
-    if (path.section != SGFontYours || path.row != 0 || !self.importedName.length) return nil;
+    if (_downloading || path.section != SGFontYours || path.row != 0 || !self.importedName.length) return nil;
     UIContextualAction *delete = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive title:@"Delete"
         handler:^(UIContextualAction *action, UIView *view, void (^done)(BOOL)) {
             removeImported();

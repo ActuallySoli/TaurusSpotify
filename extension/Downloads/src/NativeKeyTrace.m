@@ -1,5 +1,6 @@
 #import "NativeKeyTrace.h"
 #import "NativeTracePatch.h"
+#import "NativeRestrictionsPatch.h"
 #import "DiagnosticTrace.h"
 #import "WireProto.h"
 #import <dlfcn.h>
@@ -9,7 +10,6 @@
 #import <os/lock.h>
 #include <stdatomic.h>
 
-static const uint8_t uuidBytes[]={0xfb,0xce,0x22,0xc1,0x7e,0x1b,0x3e,0x0d,0x9b,0xe8,0x66,0xff,0x92,0x91,0x94,0x3e};
 static os_unfair_lock mapLock=OS_UNFAIR_LOCK_INIT;
 static struct {uintptr_t success,failure,wrapper,owner;SAPTraceID operation;uint64_t generation;uint8_t fileID[20];} requests[256];
 static unsigned nextSlot;
@@ -29,7 +29,7 @@ static BOOL supported(uintptr_t image) {
     struct mach_header_64 h;if(!readBytes(image,&h,sizeof(h))||h.magic!=MH_MAGIC_64||h.ncmds>1024||h.sizeofcmds>1048576)return NO;
     uintptr_t cursor=image+sizeof(h),end=cursor+h.sizeofcmds;
     for(unsigned i=0;i<h.ncmds;i++){struct load_command c;if(cursor+sizeof(c)>end||!readBytes(cursor,&c,sizeof(c))||c.cmdsize<8||cursor+c.cmdsize>end)return NO;
-        if(c.cmd==LC_UUID){struct uuid_command u;return c.cmdsize>=sizeof(u)&&readBytes(cursor,&u,sizeof(u))&&!memcmp(u.uuid,uuidBytes,16);}cursor+=c.cmdsize;}return NO;
+        if(c.cmd==LC_UUID){struct uuid_command u;return c.cmdsize>=sizeof(u)&&readBytes(cursor,&u,sizeof(u))&&!memcmp(u.uuid,SAPSupportedUUID,16);}cursor+=c.cmdsize;}return NO;
 }
 static NSString *hex(const uint8_t *bytes,NSUInteger count) {NSMutableString *out=[NSMutableString stringWithCapacity:count*2];for(NSUInteger i=0;i<count;i++)[out appendFormat:@"%02x",bytes[i]];return out;}
 static NSString *trackForFile(const uint8_t *fileID) {

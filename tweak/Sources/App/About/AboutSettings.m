@@ -2,8 +2,10 @@
 #import "Settings/SGPageStyle.h"
 #import "About.h"
 #import "App/Onboarding/Onboarding.h"
+#import "Shared/AutoMix/AutoMix.h"
 
 static void resetAll(void) {
+    SGAutoMixRestorePreferences();
     NSUserDefaults *store = NSUserDefaults.standardUserDefaults;
     NSUInteger removed = 0;
     for (NSString *key in [store persistentDomainForName:NSBundle.mainBundle.bundleIdentifier].allKeys) {

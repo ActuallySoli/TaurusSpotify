@@ -9,7 +9,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from patch_native_restrictions import UUID, branch, layout
+from patch_native_restrictions import UUID, branch, layout, verify_padding
+from native_profiles import SPOTIFY_9190, conditional_header, profile_for_uuid
 
 PREFERRED = 0x100000000
 CALL_SITE = 0x103594F60
@@ -55,23 +56,23 @@ def _compiled_template():
     raise ValueError('Key trampoline text section absent')
 
 
-def trampoline():
+def trampoline(profile=SPOTIFY_9190):
     out = bytearray(_compiled_template())
     words = [struct.unpack_from('<I', out, i)[0] for i in range(0, len(out) & ~3, 4)]
     adrp = words.index(0x90000010) * 4
     if words[adrp // 4 + 1] != 0x91000210:
         raise ValueError('dlsym call template differs')
-    page_delta = (DLSYM_STUB >> 12) - ((CAVE + adrp) >> 12)
+    page_delta = (profile.dlsym >> 12) - ((profile.key_cave + adrp) >> 12)
     if not -(1 << 20) <= page_delta < (1 << 20):
         raise ValueError('dlsym page out of adrp range')
     struct.pack_into('<I', out, adrp,
                      0x90000010 | ((page_delta & 3) << 29) | (((page_delta >> 2) & 0x7FFFF) << 5))
-    struct.pack_into('<I', out, adrp + 4, 0x91000210 | ((DLSYM_STUB & 0xFFF) << 10))
+    struct.pack_into('<I', out, adrp + 4, 0x91000210 | ((profile.dlsym & 0xFFF) << 10))
     # The final self-branch is unique; return to the unmodified blr x9.
     terminator = out.index(struct.pack('<I', 0x14000000), 0x70)
     if terminator + 4 != out.index(SELECTOR_NAME):
         raise ValueError('Key trampoline terminator differs')
-    struct.pack_into('<I', out, terminator, branch(CAVE + terminator, CALL_SITE + 4))
+    struct.pack_into('<I', out, terminator, branch(profile.key_cave + terminator, profile.request + 4))
     return bytes(out)
 
 
@@ -82,7 +83,8 @@ def _offset(segments, address, size):
     raise ValueError('Expected executable file-backed text')
 
 
-def _verify_dlsym_binding(data):
+def _verify_dlsym_binding(data, profile=SPOTIFY_9190):
+    dlsym_stub = profile.dlsym
     cursor = 32
     symtab = dysym = stubs = None
     for _ in range(struct.unpack_from('<I', data, 16)[0]):
@@ -97,15 +99,15 @@ def _verify_dlsym_binding(data):
                 if data[section:section + 16].split(b'\0')[0] == b'__stubs':
                     address, size = struct.unpack_from('<QQ', data, section + 32)
                     first, width = struct.unpack_from('<II', data, section + 68)
-                    if address <= DLSYM_STUB < address + size:
+                    if address <= dlsym_stub < address + size:
                         stubs = (address, first, width)
         cursor += length
     if not symtab or not dysym or not stubs:
         raise ValueError('Cannot verify dlsym import binding')
     address, first, width = stubs
-    if width != 12 or (DLSYM_STUB - address) % width:
+    if width != 12 or (dlsym_stub - address) % width:
         raise ValueError('dlsym stub layout changed')
-    index = struct.unpack_from('<I', data, dysym[12] + 4 * (first + (DLSYM_STUB - address) // width))[0]
+    index = struct.unpack_from('<I', data, dysym[12] + 4 * (first + (dlsym_stub - address) // width))[0]
     if index >= symtab[1]:
         raise ValueError('dlsym indirect symbol index invalid')
     string = symtab[2] + struct.unpack_from('<I', data, symtab[0] + 16 * index)[0]
@@ -115,41 +117,41 @@ def _verify_dlsym_binding(data):
 
 def patch(data, runtime_selectable=True):
     commands_end, first_section, segments, uuid = layout(data)
-    if uuid != UUID:
-        raise ValueError('Unsupported Spotify UUID')
-    _verify_dlsym_binding(data)
-    for address, expected in ((WINDOW, ORIGINAL), (PROVIDER, PROVIDER_HEAD),
-                              (MAPPING, MAPPING_BYTES), (DLSYM_STUB, DLSYM_STUB_HEAD)):
+    profile = profile_for_uuid(uuid)
+    _verify_dlsym_binding(data, profile)
+    for address, expected in ((profile.window, ORIGINAL), (profile.provider, profile.provider_head),
+                              (profile.mapping, profile.mapping_bytes), (profile.dlsym, profile.dlsym_head)):
         at = _offset(segments, address, len(expected))
         if data[at:at + len(expected)] != expected:
             raise ValueError(f'Key requester code differs at {address:#x}')
-    call = _offset(segments, CALL_SITE, 4)
+    call = _offset(segments, profile.request, 4)
     if not runtime_selectable:
         out=bytearray(data)
         struct.pack_into('<I',out,call,0x52800002)
-        return bytes(out), {'caller':hex(CALL_SITE),'original_mode':1,'initial_mode':0,
+        return bytes(out), {'caller':hex(profile.request),'original_mode':1,'initial_mode':0,
             'runtime_selectable':False,'implementation':'direct mov w2, #0; recovery rollback',
             'native_callbacks_and_persistence_unchanged':True}
-    stub = trampoline()
-    target = _offset(segments, CAVE, len(stub))
-    if target < commands_end or target + len(stub) > first_section or any(data[target:target + len(stub)]):
-        raise ValueError('Verified executable header padding unavailable')
+    stub = trampoline(profile)
+    target = _offset(segments, profile.key_cave, len(stub))
+    verify_padding(data, target, len(stub))
     out = bytearray(data)
     out[target:target + len(stub)] = stub
-    struct.pack_into('<I', out, call, branch(CALL_SITE, CAVE))
+    struct.pack_into('<I', out, call, branch(profile.request, profile.key_cave))
     return bytes(out), {
-        'caller': hex(CALL_SITE), 'trampoline': hex(CAVE), 'trampoline_bytes': len(stub),
-        'provider': hex(PROVIDER), 'original_mode': 1, 'initial_mode': 0,
+        'caller': hex(profile.request), 'trampoline': hex(profile.key_cave), 'trampoline_bytes': len(stub),
+        'provider': hex(profile.provider), 'original_mode': 1, 'initial_mode': 0,
         'runtime_selectable': True, 'getter': SELECTOR_NAME[:-1].decode(),
         'native_callbacks_and_persistence_unchanged': True,
     }
 
 
-def key_header():
-    stub = trampoline()
+def key_header(profile=None):
+    if profile is None:
+        return conditional_header(key_header)
+    stub = trampoline(profile)
     as_bytes = lambda value: ','.join(f'0x{b:02x}' for b in value)
     return ('// Generated by tools/patch_key_request_mode.py; checked by the build.\n'
             '#pragma once\n#include <stdint.h>\n'
-            f'static const uintptr_t SAPKeyModeCaveOffset=0x{CAVE - PREFERRED:x};\n'
-            f'static const uint8_t SAPKeyModeCallerHead[]={{{as_bytes(struct.pack("<I", branch(CALL_SITE, CAVE)))}}};\n'
+            f'static const uintptr_t SAPKeyModeCaveOffset=0x{profile.key_cave - PREFERRED:x};\n'
+            f'static const uint8_t SAPKeyModeCallerHead[]={{{as_bytes(struct.pack("<I", branch(profile.request, profile.key_cave)))}}};\n'
             f'static const uint8_t SAPKeyModeTrampoline[]={{{as_bytes(stub)}}};\n')

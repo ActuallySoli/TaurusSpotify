@@ -61,16 +61,53 @@ static void showState(UIButton *button) {
 %hook UIButton
 - (void)layoutSubviews {
     %orig;
-    if ([self.accessibilityIdentifier isEqualToString:@"Components.UI.AddToButton"]) showState(self);
+    if (SGRPlainCheckOn() && [self.accessibilityIdentifier isEqualToString:@"Components.UI.AddToButton"]) showState(self);
 }
 
 - (void)setSelected:(BOOL)selected {
     %orig;
-    if ([self.accessibilityIdentifier isEqualToString:@"Components.UI.AddToButton"]) showState(self);
+    if (SGRPlainCheckOn() && [self.accessibilityIdentifier isEqualToString:@"Components.UI.AddToButton"]) showState(self);
+}
+%end
+
+static BOOL isExplicitView(UIView *view) {
+    NSString *identifier = view.accessibilityIdentifier;
+    if ([identifier isEqualToString:@"Components.UI.ExplicitIcon"] ||
+        [identifier isEqualToString:@"Podcast.Row.MarkAsPlayed.ExplicitIcon"] ||
+        [identifier isEqualToString:@"Components.UI.19andOverIcon"]) return YES;
+    return [NSStringFromClass(view.class) hasSuffix:@"ExplicitBadge"];
+}
+
+static void styleExplicitView(UIView *view) {
+    if (SGHidden(SGKeyHideExplicit)) {
+        SGRSuppress(view);
+        return;
+    }
+    if (!SGEnabled(SGRKeyPrettierIcons)) return;
+    static char kPrettyKey;
+    UIImageView *badge = objc_getAssociatedObject(view, &kPrettyKey);
+    if (!badge) {
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:11 weight:UIImageSymbolWeightSemibold];
+        badge = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"e.square.fill" withConfiguration:cfg]];
+        badge.tintColor = SGRTertiary();
+        badge.contentMode = UIViewContentModeCenter;
+        badge.userInteractionEnabled = NO;
+        objc_setAssociatedObject(view, &kPrettyKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        for (UIView *sub in view.subviews) sub.alpha = 0;
+        [view addSubview:badge];
+    }
+    badge.frame = view.bounds;
+}
+
+%hook UIView
+- (void)layoutSubviews {
+    %orig;
+    if (isExplicitView(self)) styleExplicitView(self);
 }
 %end
 
 %ctor {
-    if (!SGRedesignedUI() || !SGRPlainCheckOn()) return;
+    if (!SGRedesignedUI()) return;
+    if (!SGRPlainCheckOn() && !SGHidden(SGKeyHideExplicit) && !SGEnabled(SGRKeyPrettierIcons)) return;
     %init;
 }

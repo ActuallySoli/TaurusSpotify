@@ -12,6 +12,7 @@
 #import "SGRKaraokeView.h"
 #import "LyricsText.h"
 #import "LyricsLook.h"
+#import "SGRLyricsShaderEffect.h"
 #import "MeaningSheet.h"
 #import "SGRSingControl.h"
 #import "Shared/LyricsSources/LyricsSources.h"
@@ -30,6 +31,11 @@ static NSTimeInterval sgWholeFade = 0.35;
 static BOOL sgLetters, sgBounce;
 static CGFloat sgLetterLift = 5, sgGlow = 8, sgSpread = 0.5, sgWaveGain = 1, sgGlowGain = 1;
 static double sgFloatMinMs = 700;
+// The lyrics shader's colors, read with the look: the lit word, the dim ones and the glow behind the letters.
+static UIColor *sgLit, *sgDim, *sgShaderGlow;
+static CGFloat sgShaderGlowScale = 1;
+static NSInteger sgShaderIndex;
+static SGRLyricsShaderOptions sgShaderOptions;
 static const CGFloat kAnchor = 0.28;   // where the sung line rests, as a share of the height
 static const CGFloat kEdgeFade = 0.1;  // the lines fade out over this share at the top and bottom
 static const CGFloat kBlurPerLine = 1.4, kMaxBlur = 6;
@@ -116,14 +122,14 @@ static UILabel *wordLabel(NSString *text, UIFont *font, UIColor *color, CGRect f
     UILabel *label = [[UILabel alloc] initWithFrame:frame];
     label.text = text;
     label.font = font;
-    label.textColor = color;
+    label.textColor = color ?: UIColor.whiteColor;
     if (!rightToLeft) return label;
     // A word of a line written right to left is set in the line's direction, so the punctuation at its
     // ends falls where the whole line would put it, a word of a left to right script among them too.
     NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
     paragraph.baseWritingDirection = NSWritingDirectionRightToLeft;
     label.attributedText = [[NSAttributedString alloc] initWithString:text attributes:@{
-        NSFontAttributeName: font, NSForegroundColorAttributeName: color, NSParagraphStyleAttributeName: paragraph}];
+        NSFontAttributeName: font, NSForegroundColorAttributeName: color ?: UIColor.whiteColor, NSParagraphStyleAttributeName: paragraph}];
     return label;
 }
 
@@ -136,8 +142,8 @@ static UIView *letterHost(NSString *text, UIFont *font, CGRect bounds, NSArray<U
                           usingBlock:^(NSString *letter, NSRange range, NSRange enclosing, BOOL *stop) {
         CGFloat x = [[text substringToIndex:range.location] sizeWithAttributes:attributes].width;
         CGFloat wide = ceil([letter sizeWithAttributes:attributes].width) + 2;
-        UILabel *label = wordLabel(letter, font, UIColor.whiteColor, CGRectMake(floor(x), 0, wide, bounds.size.height), NO);
-        label.layer.shadowColor = UIColor.whiteColor.CGColor;
+        UILabel *label = wordLabel(letter, font, sgLit, CGRectMake(floor(x), 0, wide, bounds.size.height), NO);
+        label.layer.shadowColor = sgShaderGlow.CGColor;
         label.layer.shadowOffset = CGSizeZero;
         label.layer.shadowOpacity = 0;
         [host addSubview:label];
@@ -159,9 +165,12 @@ static UIView *letterHost(NSString *text, UIFont *font, CGRect bounds, NSArray<U
 // riseEnd, which are the word's own times until the sweep says otherwise.
 @property (nonatomic) BOOL whole;
 @property (nonatomic) double riseStart, riseEnd;
+@property (nonatomic) double shaderEnd;
 - (void)fillTo:(CGFloat)cursor;
 - (void)floatAt:(double)ms;
 - (void)settle;
+- (void)showShaderAt:(double)ms running:(BOOL)running viewport:(CGRect)viewport inView:(UIView *)view;
+- (void)stopShader;
 @end
 
 @implementation SGRKaraokeWordView {
@@ -169,6 +178,8 @@ static UIView *letterHost(NSString *text, UIFont *font, CGRect bounds, NSArray<U
     NSArray<UILabel *> *_letters;   // the wave's: each letter lit on its own, empty for a word lifted whole
     CGFloat _filled, _lift;
     BOOL _rightToLeft;
+    SGRLyricsShaderEffect *_shaderEffect;
+    BOOL _shaderAttempted;
 }
 
 - (instancetype)initWithWord:(SGKaraokeWord *)word font:(UIFont *)font rightToLeft:(BOOL)rightToLeft {
@@ -178,12 +189,20 @@ static UIView *letterHost(NSString *text, UIFont *font, CGRect bounds, NSArray<U
     _word = word;
     _riseStart = word.start;
     _riseEnd = word.end;
+    _shaderEnd = word.end;
     _rightToLeft = rightToLeft;
-    [self addSubview:wordLabel(word.text, font, [UIColor colorWithWhite:1 alpha:kDimAlpha], self.bounds, rightToLeft)];
+    [self addSubview:wordLabel(word.text, font, [sgDim colorWithAlphaComponent:kDimAlpha], self.bounds, rightToLeft)];
     BOOL waves = sgLetters && !rightToLeft && word.text.length > 1 && !SGKaraokeUnspacedScript(word.text);
     NSArray<UILabel *> *letters = nil;
-    _lit = waves ? letterHost(word.text, font, self.bounds, &letters) : wordLabel(word.text, font, UIColor.whiteColor, self.bounds, rightToLeft);
+    _lit = waves ? letterHost(word.text, font, self.bounds, &letters) : wordLabel(word.text, font, sgLit, self.bounds, rightToLeft);
     _letters = letters;
+    // A tinted shader glows behind the sung word, riding the sweep's mask; the letters' wave sets its own.
+    if (sgShaderGlowScale > 1) {
+        _lit.layer.shadowColor = sgShaderGlow.CGColor;
+        _lit.layer.shadowOffset = CGSizeZero;
+        _lit.layer.shadowRadius = 8 * sgShaderGlowScale;
+        _lit.layer.shadowOpacity = waves ? 0 : 0.5;
+    }
     // Hidden until the line is sung: a masked layer is drawn offscreen every frame even when the
     // mask leaves nothing of it, and a song has hundreds of words waiting their turn.
     _lit.hidden = YES;
@@ -246,7 +265,7 @@ static UIView *letterHost(NSString *text, UIFont *font, CGRect bounds, NSArray<U
         UILabel *letter = _letters[i];
         CGFloat lift = sgLetterLift * sgWaveGain * f;
         CGFloat opacity = MIN(1, MAX(0, f) * MIN(1, sgGlowGain));
-        CGFloat radius = sgGlow * sgGlowGain;
+        CGFloat radius = sgGlow * sgGlowGain * sgShaderGlowScale;
         if (fabs(letter.layer.shadowOpacity - opacity) > 0.01 || letter.transform.ty != -lift) {
             letter.transform = CGAffineTransformMakeTranslation(0, -lift);
             letter.layer.shadowOpacity = opacity;
@@ -256,12 +275,46 @@ static UIView *letterHost(NSString *text, UIFont *font, CGRect bounds, NSArray<U
 }
 
 - (void)settle {
+    [_shaderEffect invalidate];
+    _shaderEffect = nil;
+    _shaderAttempted = NO;
     for (UILabel *letter in _letters) {
         letter.transform = CGAffineTransformIdentity;
         letter.layer.shadowOpacity = 0;
     }
     _lift = 0;
     self.transform = CGAffineTransformIdentity;
+}
+
+- (void)showShaderAt:(double)ms running:(BOOL)running viewport:(CGRect)viewport inView:(UIView *)view {
+    if (!sgShaderIndex || sgShaderOptions.intensity <= 0) return;
+    BOOL sung = ms >= (_whole ? _riseStart : _word.start) && ms < _shaderEnd;
+    if (!sung) {
+        [_shaderEffect invalidate];
+        _shaderEffect = nil;
+        _shaderAttempted = NO;
+        return;
+    }
+    BOOL visible = running && !_lit.hidden && CGRectIntersectsRect([self convertRect:self.bounds toView:view], viewport);
+    if (visible && !_shaderEffect && !_shaderAttempted) {
+        _shaderAttempted = YES;
+        NSArray<UILabel *> *labels = _letters.count ? _letters : @[(UILabel *)_lit];
+        _shaderEffect = [[SGRLyricsShaderEffect alloc] initWithLabels:labels root:_lit style:sgShaderIndex intensity:sgShaderOptions.intensity speed:sgShaderOptions.speed];
+    }
+    [_shaderEffect showTime:ms / 1000 running:visible];
+}
+
+- (void)stopShader {
+    [_shaderEffect showTime:0 running:NO];
+}
+
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    if (!self.window) {
+        [_shaderEffect invalidate];
+        _shaderEffect = nil;
+        _shaderAttempted = NO;
+    }
 }
 
 @end
@@ -403,15 +456,16 @@ static NSArray<NSNumber *> *offsetsOf(SGRPlace *places, NSUInteger count) {
 
 // A text of words on its own, from `top`; returns where it ends.
 static CGFloat layRun(NSArray<SGKaraokeWord *> *words, UIFont *font, CGFloat width, BOOL right, CGFloat top,
-                      NSArray<NSValue *> **frames, NSArray<NSNumber *> **offsets) {
+                      BOOL furigana, NSArray<NSValue *> **frames, NSArray<NSNumber *> **offsets) {
     NSUInteger count = words.count;
     SGRPlace *places = calloc(count + 1, sizeof(SGRPlace));
     CGRect *rects = calloc(count + 1, sizeof(CGRect));
     NSUInteger *groups = calloc(count + 1, sizeof(NSUInteger));
     NSUInteger rows = flow(words, font, width, places);
-    CGFloat row = ceil(font.lineHeight) - kRowTighten, high = ceil(font.lineHeight);
+    CGFloat rubyHeadroom = furigana ? ceil(font.pointSize * 0.42) : 0;
+    CGFloat row = ceil(font.lineHeight) - kRowTighten + rubyHeadroom, high = ceil(font.lineHeight);
     for (NSUInteger i = 0; i < count; i++) {
-        rects[i] = CGRectMake(places[i].x, top + places[i].row * row, places[i].width, high);
+        rects[i] = CGRectMake(places[i].x, top + rubyHeadroom + places[i].row * row, places[i].width, high);
         groups[i] = places[i].row;
     }
     NSMutableString *text = [NSMutableString string];
@@ -422,14 +476,14 @@ static CGFloat layRun(NSArray<SGKaraokeWord *> *words, UIFont *font, CGFloat wid
     free(places);
     free(rects);
     free(groups);
-    return top + (rows ? rows - 1 : 0) * row + high;
+    return top + rubyHeadroom + (rows ? rows - 1 : 0) * row + high;
 }
 
 // Two texts of words where the second spells out the first, or the first the second: each row of the
 // leading one with the other's words under it, each under the word it starts with, as Apple Music sets
 // its pronunciation, so a syllable reads under the syllable it sounds. Returns where the pair ends.
 static CGFloat layPair(NSArray<SGKaraokeWord *> *lead, UIFont *leadFont, NSArray<SGKaraokeWord *> *under, UIFont *underFont,
-                       CGFloat width, BOOL right, CGFloat top, NSArray<NSValue *> **leadFrames, NSArray<NSNumber *> **leadOffsets,
+                       CGFloat width, BOOL right, CGFloat top, BOOL furigana, NSArray<NSValue *> **leadFrames, NSArray<NSNumber *> **leadOffsets,
                        NSArray<NSValue *> **underFrames, NSArray<NSNumber *> **underOffsets) {
     NSUInteger leads = lead.count, unders = under.count, count = leads + unders;
     SGRPlace *places = calloc(count + 1, sizeof(SGRPlace));
@@ -443,12 +497,14 @@ static CGFloat layPair(NSArray<SGKaraokeWord *> *lead, UIFont *leadFont, NSArray
         while (i + 1 < leads && lead[i + 1].start <= under[j].start) i++;
         matched[j] = i;
     }
+    CGFloat rubyHeadroom = furigana ? ceil(leadFont.pointSize * 0.42) : 0;
     CGFloat leadRow = ceil(leadFont.lineHeight) - kRowTighten, leadHigh = ceil(leadFont.lineHeight);
     CGFloat underRow = ceil(underFont.lineHeight) - kRowTighten, underHigh = ceil(underFont.lineHeight);
     CGFloat space = ceil([@" " sizeWithAttributes:@{NSFontAttributeName: underFont}].width);
     CGFloat y = top, bottom = top;
     NSUInteger j = 0;
     for (NSUInteger r = 0; r < rows; r++) {
+        y += rubyHeadroom;
         for (NSUInteger i = 0; i < leads; i++) {
             if (places[i].row != r) continue;
             rects[i] = CGRectMake(places[i].x, y, places[i].width, leadHigh);
@@ -503,9 +559,17 @@ static CGFloat layPair(NSArray<SGKaraokeWord *> *lead, UIFont *leadFont, NSArray
     return bottom;
 }
 
-// The Lyrics page's romanisation: whether it is on, and whether the song reads Japanese, read once a
-// build on the main thread, where each line's Latin reading is worked out and kept on the line too.
-static BOOL sg_romanised, sg_japanese;
+// The Lyrics page's romanisation and furigana: whether each is on, and whether the song reads Japanese,
+// read once a build on the main thread, where each line's Latin reading is worked out and kept on the line too.
+static BOOL sg_romanised, sg_japanese, sg_furigana;
+
+static BOOL wordsHaveFurigana(NSArray<SGKaraokeWord *> *words) {
+    if (!sg_furigana) return NO;
+    for (SGKaraokeWord *word in words) {
+        if (SGLyricsFuriganaSpans(word.text).count) return YES;
+    }
+    return NO;
+}
 
 // What a line shows under its words: its romanisation, when asked for, above its translation.
 static NSString *secondaryText(SGKaraokeLine *line) {
@@ -550,7 +614,7 @@ static SGRKaraokeLayout *layOut(SGKaraokeLine *line, CGFloat width, SGRKaraokeSt
             NSArray<NSNumber *> *pairedOffsets;
             y = layPair(lyrics ? line.words : spoken, lyrics ? style.lyrics : style.pronunciation,
                         lyrics ? spoken : line.words, lyrics ? style.pronunciation : style.lyrics,
-                        width, layout.right, y, &frames, &offsets, &pairedFrames, &pairedOffsets);
+                        width, layout.right, y, lyrics && wordsHaveFurigana(line.words), &frames, &offsets, &pairedFrames, &pairedOffsets);
             layout.lyricFrames = lyrics ? frames : pairedFrames;
             layout.lyricOffsets = lyrics ? offsets : pairedOffsets;
             layout.spokenFrames = lyrics ? pairedFrames : frames;
@@ -558,7 +622,8 @@ static SGRKaraokeLayout *layOut(SGKaraokeLine *line, CGFloat width, SGRKaraokeSt
             p++;
             lyrics = YES;
         } else {
-            y = layRun(lyrics ? line.words : spoken, lyrics ? style.lyrics : style.pronunciation, width, layout.right, y, &frames, &offsets);
+            y = layRun(lyrics ? line.words : spoken, lyrics ? style.lyrics : style.pronunciation, width, layout.right, y,
+                       lyrics && wordsHaveFurigana(line.words), &frames, &offsets);
             if (lyrics) {
                 layout.lyricFrames = frames;
                 layout.lyricOffsets = offsets;
@@ -600,7 +665,7 @@ typedef struct {
 @interface SGRKaraokeSweep : NSObject
 @property (nonatomic, readonly) NSArray<SGRKaraokeWordView *> *words;
 - (instancetype)initWithWords:(NSArray<SGRKaraokeWordView *> *)words wholeFrom:(double)start;
-- (void)showTime:(double)ms;
+- (void)showTime:(double)ms effectsRunning:(BOOL)running viewport:(CGRect)viewport inView:(UIView *)view;
 @end
 
 @implementation SGRKaraokeSweep {
@@ -619,6 +684,7 @@ typedef struct {
             word.whole = YES;
             word.riseStart = start;
             word.riseEnd = start + kWholeRiseMs;
+            word.shaderEnd = words.lastObject.word.end;
         }
         return self;
     }
@@ -675,12 +741,13 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
          + (3 * u2 - 2 * u3) * b.x + (u3 - u2) * h * b.slope;
 }
 
-- (void)showTime:(double)ms {
+- (void)showTime:(double)ms effectsRunning:(BOOL)running viewport:(CGRect)viewport inView:(UIView *)view {
     // A whole run is only ever shown while its line is sung, so it is lit throughout.
     CGFloat cursor = _whole ? CGFLOAT_MAX : [self cursorAt:ms];
     for (SGRKaraokeWordView *word in _words) {
         [word fillTo:cursor];
         [word floatAt:ms];
+        [word showShaderAt:ms running:running viewport:viewport inView:view];
     }
 }
 
@@ -699,7 +766,8 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
 // line timed only by the line are swept on their estimated times, rather than lit whole.
 - (instancetype)initWithLine:(SGKaraokeLine *)line width:(CGFloat)width style:(SGRKaraokeStyle *)style under:(SGRKaraokeLineView *)under
                      blurred:(BOOL)blurred sweepsEstimates:(BOOL)sweepsEstimates;
-- (void)showTime:(double)ms;
+- (void)showTime:(double)ms effectsRunning:(BOOL)running viewport:(CGRect)viewport inView:(UIView *)view;
+- (void)stopShaders;
 // Every word lit and left so, for lyrics with no timing: nothing is sung, so nothing is dim.
 - (void)showPlain;
 - (void)markMeaning:(NSArray<SGLyricsMeaning *> *)meanings;
@@ -714,6 +782,7 @@ static const CGFloat kTranslationLit = 0.6;
     NSArray<SGRKaraokeSweep *> *_sweeps;   // the line's words, then their pronunciation's where shown
     NSArray<SGRKaraokeWordView *> *_words;   // every word of both
     NSArray<SGRKaraokeWordView *> *_lyricWords;
+    NSArray<UILabel *> *_furiganaLabels;
     UIImageView *_bubble;
     CAShapeLayer *_underline;
     UILabel *_translation;
@@ -724,10 +793,12 @@ static const CGFloat kTranslationLit = 0.6;
 // A sweep's word views, each put where the layout has it and told where it sits along the sweep.
 // start: NAN for words timed one by one, else when the run lights up whole.
 - (SGRKaraokeSweep *)sweepOf:(NSArray<SGKaraokeWord *> *)words font:(UIFont *)font frames:(NSArray<NSValue *> *)frames
-                     offsets:(NSArray<NSNumber *> *)offsets wholeFrom:(double)start {
+                     offsets:(NSArray<NSNumber *> *)offsets wholeFrom:(double)start furigana:(BOOL)furigana {
     if (!words.count || frames.count != words.count) return nil;
     BOOL rightToLeft = readsRightToLeft([[words valueForKey:@"text"] componentsJoinedByString:@""]);
     NSMutableArray<SGRKaraokeWordView *> *views = [NSMutableArray arrayWithCapacity:words.count];
+    NSMutableArray<UILabel *> *rubies = furigana ? [NSMutableArray array] : nil;
+    UIFont *rubyFont = furigana ? SGRLyricsFont(MAX(9, round(font.pointSize * 0.36)), UIFontWeightSemibold) : nil;
     for (NSUInteger i = 0; i < words.count; i++) {
         SGRKaraokeWordView *view = [[SGRKaraokeWordView alloc] initWithWord:words[i] font:font rightToLeft:rightToLeft];
         CGRect frame = frames[i].CGRectValue;
@@ -735,7 +806,25 @@ static const CGFloat kTranslationLit = 0.6;
         view.offset = offsets[i].doubleValue;
         [self addSubview:view];
         [views addObject:view];
+        if (furigana) {
+            NSString *wordText = words[i].text;
+            for (SGLyricsFuriganaSpan *span in SGLyricsFuriganaSpans(wordText)) {
+                if (NSMaxRange(span.range) > wordText.length) continue;
+                CGFloat prefixW = span.range.location > 0 ? [[wordText substringToIndex:span.range.location] sizeWithAttributes:@{NSFontAttributeName: font}].width : 0;
+                CGFloat spanW = [[wordText substringWithRange:span.range] sizeWithAttributes:@{NSFontAttributeName: font}].width;
+                UILabel *ruby = [UILabel new];
+                ruby.font = rubyFont;
+                ruby.text = span.reading;
+                ruby.textColor = UIColor.whiteColor;
+                ruby.alpha = kDimAlpha;
+                [ruby sizeToFit];
+                ruby.center = CGPointMake(frame.origin.x + prefixW + spanW * 0.5, frame.origin.y - ruby.bounds.size.height * 0.45 + 2);
+                [self addSubview:ruby];
+                [rubies addObject:ruby];
+            }
+        }
     }
+    if (rubies.count) _furiganaLabels = [rubies copy];
     return [[SGRKaraokeSweep alloc] initWithWords:views wholeFrom:start];
 }
 
@@ -756,9 +845,9 @@ static double wholeFrom(SGKaraokeLine *run, BOOL sweepsEstimates) {
     _right = layout.right;
     NSMutableArray<SGRKaraokeSweep *> *sweeps = [NSMutableArray array];
     SGRKaraokeSweep *sung = [self sweepOf:line.words font:style.lyrics frames:layout.lyricFrames offsets:layout.lyricOffsets
-                                wholeFrom:wholeFrom(line, sweepsEstimates)];
+                                wholeFrom:wholeFrom(line, sweepsEstimates) furigana:wordsHaveFurigana(line.words)];
     SGRKaraokeSweep *spoken = [self sweepOf:line.pronunciation.words font:style.pronunciation frames:layout.spokenFrames
-                                    offsets:layout.spokenOffsets wholeFrom:wholeFrom(line.pronunciation, sweepsEstimates)];
+                                    offsets:layout.spokenOffsets wholeFrom:wholeFrom(line.pronunciation, sweepsEstimates) furigana:NO];
     if (sung) [sweeps addObject:sung];
     if (spoken) [sweeps addObject:spoken];
     _sweeps = sweeps;
@@ -817,9 +906,12 @@ static const NSUInteger kLinesPerFrame = 4;
     _active = active;
     _backing.active = active;
     NSUInteger generation = ++_generation;
-    if (_translation) {
+    if (_translation || _furiganaLabels.count) {
         [UIView animateWithDuration:active ? 0.3 : 0.5 delay:0 options:UIViewAnimationOptionBeginFromCurrentState
-                         animations:^{ self->_translation.alpha = active ? kTranslationLit : kDimAlpha; } completion:nil];
+                         animations:^{
+            self->_translation.alpha = active ? kTranslationLit : kDimAlpha;
+            for (UILabel *ruby in self->_furiganaLabels) ruby.alpha = active ? 0.85 : kDimAlpha;
+        } completion:nil];
     }
     if (active) {
         NSMutableArray<SGRKaraokeWordView *> *whole = [NSMutableArray array];
@@ -858,9 +950,14 @@ static const NSUInteger kLinesPerFrame = 4;
     }];
 }
 
-- (void)showTime:(double)ms {
-    for (SGRKaraokeSweep *sweep in _sweeps) [sweep showTime:ms];
-    [_backing showTime:ms];   // timed on its own, so it lags the line as it is sung
+- (void)showTime:(double)ms effectsRunning:(BOOL)running viewport:(CGRect)viewport inView:(UIView *)view {
+    for (SGRKaraokeSweep *sweep in _sweeps) [sweep showTime:ms effectsRunning:running viewport:viewport inView:view];
+    [_backing showTime:ms effectsRunning:running viewport:viewport inView:view];
+}
+
+- (void)stopShaders {
+    for (SGRKaraokeWordView *word in _words) [word stopShader];
+    [_backing stopShaders];
 }
 
 - (void)showPlain {
@@ -870,6 +967,7 @@ static const NSUInteger kLinesPerFrame = 4;
         [word fillTo:CGFLOAT_MAX];
     }
     _translation.alpha = kTranslationLit;
+    for (UILabel *ruby in _furiganaLabels) ruby.alpha = 0.85;
     [_backing showPlain];
 }
 
@@ -1216,6 +1314,7 @@ typedef struct {
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(restyle) name:SGRLyricsTextDidChangeNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(lookChanged) name:SGRLyricsLookDidChangeNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(rebuild) name:SGLyricsRomanisedDidChangeNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(rebuild) name:SGLyricsFuriganaDidChangeNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(translationsChanged) name:SGLyricsTranslationsDidChangeNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(meaningMarkersChanged) name:SGLyricsMeaningMarkersDidChangeNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(linesChanged:) name:SGKaraokeLinesDidChangeNotification object:nil];
@@ -1223,6 +1322,7 @@ typedef struct {
     // away rather than by the view going: see scheduleLink.
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(scheduleLink) name:UIApplicationDidBecomeActiveNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(scheduleLink) name:UIApplicationWillResignActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(stopShaderEffects) name:UIAccessibilityReduceMotionStatusDidChangeNotification object:nil];
     return self;
 }
 
@@ -1252,6 +1352,9 @@ typedef struct {
     sgDamping = motion.damping;
     sgStagger = motion.stagger;
     sgWholeFade = motion.fade;
+    SGRLyricsShaderColors(&sgLit, &sgDim, &sgShaderGlow, &sgShaderGlowScale);
+    sgShaderIndex = SGRLyricsShaderIndex();
+    sgShaderOptions = SGRLyricsShaderOptionsNow();
     if (!_compact) {
         _fontSize = look.size;
         _lineGap = look.spacing;
@@ -1261,6 +1364,7 @@ typedef struct {
 }
 
 - (void)lookChanged {
+    [self stopShaderEffects];
     [self applyLook];
     _font = SGRLyricsFont(_fontSize, UIFontWeightBold);
     if (!_lines || _builtWidth <= 0) return;
@@ -1381,6 +1485,7 @@ typedef struct {
 // the 137 wake ups a second the mod cost over stock Spotify were this one link, measured with
 // scripts/battery-probe.sh. Nothing of the card is seen from the background, so nothing is drawn.
 - (void)scheduleLink {
+    [self stopShaderEffects];
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(startLink) object:nil];
     [_link invalidate];
     _link = nil;
@@ -1388,6 +1493,15 @@ typedef struct {
     NSTimeInterval wait = SGPlayerTransitionEnds() - CACurrentMediaTime();
     if (wait <= 0) [self startLink];
     else [self performSelector:@selector(startLink) withObject:nil afterDelay:wait + kTransitionSlack inModes:@[NSRunLoopCommonModes]];
+}
+
+- (void)stopShaderEffects {
+    for (SGRKaraokeLineView *line in _shown.allValues) [line stopShaders];
+}
+
+- (void)setHidden:(BOOL)hidden {
+    [super setHidden:hidden];
+    if (hidden) [self stopShaderEffects];
 }
 
 - (void)startLink {
@@ -1589,8 +1703,10 @@ static BOOL lyricsAreForeign(NSArray<SGKaraokeLine *> *lines, NSString *language
 // Works out each line's Latin reading when the Lyrics page asks for it, on the main thread, before a
 // layout off it reads them; clears it otherwise.
 - (void)romanise {
+    BOOL looksJapanese = _lines && SGLyricsLooksJapanese(_lines);
     sg_romanised = _lines && SGFlag(SGKeyLyricsRomanised, NO);
-    sg_japanese = sg_romanised && SGLyricsLooksJapanese(_lines);
+    sg_japanese = sg_romanised && looksJapanese;
+    sg_furigana = _lines && SGFlag(SGRKeyLyricsFurigana, NO) && looksJapanese;
     for (SGKaraokeLine *line in _lines) {
         line.romanised = sg_romanised ? SGLyricsRomanised(SGKaraokeLineText(line), sg_japanese) : nil;
     }
@@ -2081,7 +2197,16 @@ static BOOL lyricsAreForeign(NSArray<SGKaraokeLine *> *lines, NSString *language
     } else {
         [self showLinesInSight];   // the page may be scrolling by hand, or springing back
     }
-    for (NSUInteger i = 0; i < _sungCount; i++) [_shown[@(_sung[i])] showTime:now];
+    BOOL effectsRunning = sgShaderIndex > 0 && !SGRReduceMotion() && (_sample ? !_samplePaused : !_stillSince || _link.targetTimestamp - _stillSince < kStillFor);
+    if (effectsRunning) for (UIView *ancestor = self; ancestor; ancestor = ancestor.superview) {
+        if (ancestor.hidden || ancestor.alpha <= 0.01) { effectsRunning = NO; break; }
+    }
+    CGRect viewport = CGRectNull;
+    if (sgShaderIndex > 0) {
+        viewport = UIEdgeInsetsInsetRect(self.bounds, [self shownBand]);
+        if (self.window) viewport = CGRectIntersection(viewport, [self convertRect:self.window.bounds fromView:self.window]);
+    }
+    for (NSUInteger i = 0; i < _sungCount; i++) [_shown[@(_sung[i])] showTime:now effectsRunning:effectsRunning viewport:viewport inView:self];
     if (_dots.superview) [_dots showTime:now running:!_stillSince || _link.targetTimestamp - _stillSince < kStillFor at:_link.targetTimestamp];
 }
 
@@ -2156,6 +2281,7 @@ static BOOL lyricsAreForeign(NSArray<SGKaraokeLine *> *lines, NSString *language
     if (paused) _samplePausedAt = CACurrentMediaTime();
     else _sampleStart += CACurrentMediaTime() - _samplePausedAt;   // the song carries on from where it stopped
     _samplePaused = paused;
+    if (paused) [self stopShaderEffects];
 }
 
 - (BOOL)samplePaused {
