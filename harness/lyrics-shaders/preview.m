@@ -16,6 +16,9 @@ void SGLogMessage(NSString *message) { NSLog(@"%@", message); }
     CADisplayLink *_link;
     double _start;
     BOOL _paused;
+    NSMutableArray<NSNumber *> *_creationTimes, *_tickTimes;
+    double _lastReplacement;
+    NSUInteger _replacementCount;
 }
 - (UILabel *)label:(NSString *)text frame:(CGRect)frame size:(CGFloat)size {
     UILabel *label = [[UILabel alloc] initWithFrame:frame];
@@ -26,9 +29,15 @@ void SGLogMessage(NSString *message) { NSLog(@"%@", message); }
 }
 - (void)viewDidLoad {
     [super viewDidLoad];
+    for (NSString *name in @[@"result.txt", @"stress-result.txt", @"performance.json"]) {
+        NSString *path = [[NSHomeDirectory() stringByAppendingPathComponent:@"Documents"] stringByAppendingPathComponent:name];
+        [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+    }
     self.view.backgroundColor = [UIColor colorWithWhite:0.035 alpha:1];
     self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     [self.view addSubview:[self label:@"Lyrics shaders" frame:CGRectMake(28,78,340,44) size:28]];
+    _creationTimes = [NSMutableArray array];
+    _tickTimes = [NSMutableArray array];
     _roots = [NSMutableArray array];
     _labels = [NSMutableArray array];
     NSArray *names = @[@"Neon",@"Inferno",@"Hologram",@"Chrome",@"Blueprint"];
@@ -59,7 +68,10 @@ void SGLogMessage(NSString *message) { NSLog(@"%@", message); }
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(resume) name:UIApplicationDidBecomeActiveNotification object:nil];
 }
 - (SGRLyricsShaderEffect *)effect:(NSUInteger)i {
-    return [[SGRLyricsShaderEffect alloc] initWithLabels:_labels[i] root:_roots[i] style:i<5?i+1:3 intensity:1 speed:1];
+    double start = CACurrentMediaTime();
+    SGRLyricsShaderEffect *effect = [[SGRLyricsShaderEffect alloc] initWithLabels:_labels[i] root:_roots[i] style:i<5?i+1:3 intensity:1 speed:1];
+    if (effect) [_creationTimes addObject:@((CACurrentMediaTime()-start)*1000)];
+    return effect;
 }
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
@@ -73,11 +85,16 @@ void SGLogMessage(NSString *message) { NSLog(@"%@", message); }
     require(![[SGRLyricsShaderEffect alloc] initWithLabels:tooMany root:_roots[0] style:1 intensity:1 speed:1], @"mask budget");
     for (int i=0;i<30;i++) {
         SGRLyricsShaderEffect *effect = [self effect:0];
-        require(effect != nil, @"create effect");
+        if (!effect) {
+            [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.03]];
+            i--;
+            continue;
+        }
         [effect invalidate];
         [effect invalidate];
         require(SGRLyricsShaderEffect.activeMaskCount==0 && SGRLyricsShaderEffect.activeMaskPixels==0, @"repeated cleanup");
     }
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
     _effects = [NSMutableArray array];
     for (NSUInteger i=0;i<_roots.count;i++) {
         SGRLyricsShaderEffect *effect = [self effect:i];
@@ -86,15 +103,20 @@ void SGLogMessage(NSString *message) { NSLog(@"%@", message); }
     }
     _start = CACurrentMediaTime();
     _link = [CADisplayLink displayLinkWithTarget:self selector:@selector(tick)];
-    _link.preferredFrameRateRange = CAFrameRateRangeMake(80,120,120);
+    _link.preferredFrameRateRange = CAFrameRateRangeMake(60,60,60);
     [_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3*NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         for (UIView *root in self->_roots) {
             CAMetalLayer *surface = (CAMetalLayer *)root.layer.sublayers.lastObject;
             require([surface isKindOfClass:CAMetalLayer.class] && !surface.hidden, @"compiled shader must be visible");
+#if SGR_LYRICS_SHADER_TESTING
+            NSUInteger index = [self->_roots indexOfObject:root];
+            for (UILabel *label in self->_labels[index]) require(CGColorGetAlpha(label.textColor.CGColor)==0, @"UIKit ink must not double the Metal glyph");
+#endif
         }
         [self stop];
         for (UIView *root in self->_roots) require(root.layer.sublayers.lastObject.hidden, @"pause must hide shader");
+        for (NSArray *labels in self->_labels) for (UILabel *label in labels) require(CGColorGetAlpha(label.textColor.CGColor)==1, @"pause must restore UIKit ink");
         [self resume];
         for (SGRLyricsShaderEffect *effect in self->_effects) [effect invalidate];
         require(SGRLyricsShaderEffect.activeMaskCount==0 && SGRLyricsShaderEffect.activeMaskPixels==0, @"cleanup with frames in flight");
@@ -106,12 +128,73 @@ void SGLogMessage(NSString *message) { NSLog(@"%@", message); }
     });
 }
 - (void)tick {
+    double begin = CACurrentMediaTime();
     double time = CACurrentMediaTime()-_start;
     for (NSUInteger i=0;i<_effects.count;i++) {
         if (!_paused && i<5) for (NSUInteger j=0;j<_labels[i].count;j++) _labels[i][j].transform = CGAffineTransformMakeTranslation(0,-5*sin(time*2-j*0.4));
         [_effects[i] showTime:time running:!_paused];
     }
+    if (time > 4 && time < 12 && time - _lastReplacement > 0.25) {
+        _lastReplacement = time;
+        NSUInteger index = _replacementCount++ % _effects.count;
+        [_effects[index] invalidate];
+        _effects[index] = [self effect:index];
+    }
+    [_tickTimes addObject:@((CACurrentMediaTime()-begin)*1000)];
+    if (time > 12) {
+        [_link invalidate];
+        _link = nil;
+        [self stop];
+        NSArray *creation = [_creationTimes sortedArrayUsingSelector:@selector(compare:)];
+        NSArray *ticks = [_tickTimes sortedArrayUsingSelector:@selector(compare:)];
+        NSDictionary *result = @{@"create_count":@(creation.count), @"create_p95_ms":creation[(NSUInteger)(creation.count*0.95)], @"create_max_ms":creation.lastObject,
+          @"tick_count":@(ticks.count), @"tick_p95_ms":ticks[(NSUInteger)(ticks.count*0.95)], @"tick_max_ms":ticks.lastObject, @"word_replacements":@(_replacementCount)};
+        NSData *json = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+        [json writeToFile:[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/performance.json"] atomically:YES];
+        NSLog(@"PERFORMANCE %@", result);
+#if SGR_LYRICS_SHADER_TESTING
+        [self exerciseLifecycle];
+#endif
+    }
 }
+#if SGR_LYRICS_SHADER_TESTING
+- (void)exerciseLifecycle {
+    [SGRLyricsShaderEffect setTestingRenderDelay:0.25];
+    for (SGRLyricsShaderEffect *effect in _effects) {
+        [effect showTime:25 running:YES];
+        [effect showTime:25 running:NO];
+        [effect showTime:80 running:YES];
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 350*NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        for (UIView *root in self->_roots) require(root.layer.sublayers.lastObject.hidden, @"stale queued frames must not reappear after pause and seek");
+        for (NSArray *labels in self->_labels) for (UILabel *label in labels) require(CGColorGetAlpha(label.textColor.CGColor)==1, @"stale completion must preserve fallback ink");
+        [SGRLyricsShaderEffect setTestingRenderDelay:0];
+        for (SGRLyricsShaderEffect *effect in self->_effects) [effect showTime:80.1 running:YES];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 350*NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+            for (UIView *root in self->_roots) require(!root.layer.sublayers.lastObject.hidden, @"fresh frames must recover after stalled work");
+            UIView *root = self->_roots.firstObject;
+            CGRect saved = root.bounds;
+            root.bounds = CGRectMake(0,0,saved.size.width-1,saved.size.height);
+            [self->_effects.firstObject showTime:80.2 running:YES];
+            require(root.layer.sublayers.lastObject.hidden, @"changed geometry must use fallback");
+            root.bounds = saved;
+            [SGRLyricsShaderEffect setTestingRenderDelay:0.25];
+            for (SGRLyricsShaderEffect *effect in self->_effects) [effect showTime:120 running:YES];
+            [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationDidReceiveMemoryWarningNotification object:nil];
+            require(SGRLyricsShaderEffect.activeMaskCount==0 && SGRLyricsShaderEffect.activeMaskPixels==0, @"memory warning must release all active masks");
+            require([self effect:0]==nil, @"memory warning must prevent immediate reallocation");
+            for (NSArray *labels in self->_labels) for (UILabel *label in labels) require(CGColorGetAlpha(label.textColor.CGColor)==1, @"memory warning must restore readable text");
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 350*NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                for (UIView *root in self->_roots) for (CALayer *layer in root.layer.sublayers) require(![layer isKindOfClass:CAMetalLayer.class], @"cancelled work must not reattach surfaces");
+                [SGRLyricsShaderEffect setTestingRenderDelay:0];
+                NSString *result = @"PASS: delayed submission, pause/seek cancellation, fresh-frame recovery, resize fallback and memory-pressure cleanup\n";
+                [result writeToFile:[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/stress-result.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                NSLog(@"%@", result);
+            });
+        });
+    });
+}
+#endif
 - (void)stop { _paused = YES; for (SGRLyricsShaderEffect *effect in _effects) [effect showTime:0 running:NO]; }
 - (void)resume { _paused = NO; }
 @end

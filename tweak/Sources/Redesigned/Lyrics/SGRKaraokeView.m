@@ -180,6 +180,7 @@ static UIView *letterHost(NSString *text, UIFont *font, CGRect bounds, NSArray<U
     BOOL _rightToLeft;
     SGRLyricsShaderEffect *_shaderEffect;
     BOOL _shaderAttempted;
+    CFTimeInterval _shaderRetryAt;
 }
 
 - (instancetype)initWithWord:(SGKaraokeWord *)word font:(UIFont *)font rightToLeft:(BOOL)rightToLeft {
@@ -296,8 +297,9 @@ static UIView *letterHost(NSString *text, UIFont *font, CGRect bounds, NSArray<U
         return;
     }
     BOOL visible = running && !_lit.hidden && CGRectIntersectsRect([self convertRect:self.bounds toView:view], viewport);
-    if (visible && !_shaderEffect && !_shaderAttempted) {
+    if (visible && !_shaderEffect && (!_shaderAttempted || CACurrentMediaTime() >= _shaderRetryAt)) {
         _shaderAttempted = YES;
+        _shaderRetryAt = CACurrentMediaTime() + 0.5;
         NSArray<UILabel *> *labels = _letters.count ? _letters : @[(UILabel *)_lit];
         _shaderEffect = [[SGRLyricsShaderEffect alloc] initWithLabels:labels root:_lit style:sgShaderIndex intensity:sgShaderOptions.intensity speed:sgShaderOptions.speed];
     }
@@ -1355,6 +1357,7 @@ typedef struct {
     SGRLyricsShaderColors(&sgLit, &sgDim, &sgShaderGlow, &sgShaderGlowScale);
     sgShaderIndex = SGRLyricsShaderIndex();
     sgShaderOptions = SGRLyricsShaderOptionsNow();
+    if (sgShaderIndex > 0) [SGRLyricsShaderEffect prepare];
     if (!_compact) {
         _fontSize = look.size;
         _lineGap = look.spacing;

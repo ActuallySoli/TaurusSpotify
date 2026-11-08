@@ -372,11 +372,17 @@ which of the lyrics, their pronunciation and their translation is set largest, G
 be hidden without losing the hold-on-a-line meaning sheet), and the translation's language. Lyrics → Adjust → Lyrics shader offers Classic plus Neon,
 Inferno, Hologram, Chrome and Blueprint, with intensity and speed controls that apply immediately.
 The five word fills are independently authored Metal shaders. Each active word uses one transparent
-surface and glyph textures that follow its existing letter motion and inherited timing mask.
-Compilation and GPU submission run off the UI thread; the existing lyrics display link drives them.
-Paused/offscreen lyrics and Reduce Motion keep the static text. Allocation and GPU failures also keep
-that text; glyphs and surfaces have shared memory/count budgets. The saved effect profiles keep their
-existing names and format. GPU and simulator checks are in `harness/lyrics-shaders/`.
+surface, one glyph atlas and one draw call, following the existing letter motion and timing mask.
+Device/pipeline setup, texture uploads and GPU submission run off the UI thread; UIKit draws the atlas
+on the UI thread. The existing lyrics display link drives the shaders at up to 60 fps, reduced to 30
+in Low Power Mode or fair thermal state and 15 at serious thermal state. Critical thermal state,
+paused/offscreen/inactive lyrics and Reduce Motion keep static text. This does not cap the shared
+lyrics display link. The original ink is hidden only after the first successful shader frame and
+restored on fallback. Generation checks discard stale queued work after pause, seek or invalidation.
+Glyphs, surfaces, queued uploads and in-flight frames have shared budgets; memory warnings release
+active effects and prevent new allocations for 15 seconds. Allocation and GPU failures retain text.
+Saved effect profiles keep their existing names and format. GPU and simulator checks are in
+`harness/lyrics-shaders/`; device performance and battery results still require hardware testing.
 Player controls
 include independent portrait and landscape auto-hide switches for the lyrics screen. Lock Screen: its controls and, under Artwork, the full-screen style selector and ordered style hierarchy:
 Canvas (the track's Canvas or the album's Apple Music animated cover), Lyrics over the blurred cover,

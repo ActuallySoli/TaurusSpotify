@@ -2,13 +2,14 @@
 #import <Metal/Metal.h>
 #import <simd/simd.h>
 #import "Redesigned/Lyrics/SGRLyricsShaderSource.h"
+#import "Redesigned/Lyrics/SGRLyricsShaderPolicy.h"
 
 static void require(BOOL condition, NSString *message) {
     if (!condition) { fprintf(stderr, "FAIL: %s\n", message.UTF8String); exit(1); }
 }
 
 typedef struct { vector_float2 position, uv, field; } Vertex;
-typedef struct { float time, intensity; uint32_t style; float padding; } Uniforms;
+typedef struct { float time, intensity; uint32_t style; float padding; vector_float4 ink; } Uniforms;
 
 static NSData *render(id<MTLDevice> device, id<MTLRenderPipelineState> pipeline, id<MTLCommandQueue> queue,
                       NSUInteger style, float time, float intensity) {
@@ -31,7 +32,7 @@ static NSData *render(id<MTLDevice> device, id<MTLRenderPipelineState> pipeline,
     id<MTLRenderCommandEncoder> encoder = [buffer renderCommandEncoderWithDescriptor:pass];
     Vertex vertices[] = {{{-1,1},{0,0},{0,0}}, {{-1,-1},{0,1},{0,1}}, {{1,1},{1,0},{2,0}},
                          {{1,1},{1,0},{2,0}}, {{-1,-1},{0,1},{0,1}}, {{1,-1},{1,1},{2,1}}};
-    Uniforms uniforms = {time,intensity,(uint32_t)style,0};
+    Uniforms uniforms = {time,intensity,(uint32_t)style,0,{0.8,0.6,0.4,1}};
     [encoder setRenderPipelineState:pipeline];
     [encoder setVertexBytes:vertices length:sizeof(vertices) atIndex:0];
     [encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
@@ -47,6 +48,11 @@ static NSData *render(id<MTLDevice> device, id<MTLRenderPipelineState> pipeline,
 }
 
 int main(void) { @autoreleasepool {
+    require(SGRLyricsShaderFrameRate(NSProcessInfoThermalStateNominal, NO)==60, @"normal rate");
+    require(SGRLyricsShaderFrameRate(NSProcessInfoThermalStateNominal, YES)==30, @"low power rate");
+    require(SGRLyricsShaderFrameRate(NSProcessInfoThermalStateFair, NO)==30, @"warm rate");
+    require(SGRLyricsShaderFrameRate(NSProcessInfoThermalStateSerious, NO)==15, @"hot rate");
+    require(SGRLyricsShaderFrameRate(NSProcessInfoThermalStateCritical, NO)==0, @"critical fallback");
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     require(device != nil, @"Metal device missing");
     NSError *error;
@@ -74,8 +80,9 @@ int main(void) { @autoreleasepool {
         NSUInteger lit = 0;
         for (NSUInteger p=0; p<first.length; p+=4) {
             require(bytes[p]<=bytes[p+3] && bytes[p+1]<=bytes[p+3] && bytes[p+2]<=bytes[p+3], @"Output must have premultiplied alpha");
-            require(empty[p]==0 && empty[p+1]==0 && empty[p+2]==0 && empty[p+3]==0, @"Zero intensity must be transparent");
-            require(abs(2*dim[p+3]-bytes[p+3]) <= 1, @"Intensity must scale alpha");
+            require(empty[p+3]==bytes[p+3] && dim[p+3]==bytes[p+3], @"Intensity must preserve glyph coverage");
+            require(fabs(empty[p]-0.4*empty[p+3])<=1 && fabs(empty[p+1]-0.6*empty[p+3])<=1 && fabs(empty[p+2]-0.8*empty[p+3])<=1, @"Zero intensity must retain static ink");
+            for (NSUInteger c=0;c<3;c++) require(abs(2*dim[p+c]-bytes[p+c]-empty[p+c])<=2, @"Intensity must blend into static ink");
             if (bytes[p+3]) lit++;
         }
         require(lit>0 && bytes[3]==0 && bytes[127*4+3]==255, @"Glyph mask must preserve clear and filled regions");

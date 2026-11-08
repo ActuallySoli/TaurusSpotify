@@ -5,9 +5,9 @@ REPO=$(cd "$HERE/../.." && pwd)
 APP="$HERE/build/LyricsShaders.app"
 mkdir -p "$APP"
 SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
-xcrun --sdk iphonesimulator clang -target arm64-apple-ios26.0-simulator -fobjc-arc -Wall \
+xcrun --sdk iphonesimulator clang -target arm64-apple-ios26.0-simulator -fobjc-arc -Wall ${SHADER_TEST_FLAGS:--DSGR_LYRICS_SHADER_TESTING=1} \
     -isysroot "$SDK" -I"$REPO/tweak/Sources" "$HERE/preview.m" \
-    "$REPO/tweak/Sources/Redesigned/Lyrics/SGRLyricsShaderEffect.m" \
+    "${SHADER_SOURCE:-$REPO/tweak/Sources/Redesigned/Lyrics/SGRLyricsShaderEffect.m}" \
     -framework Foundation -framework CoreGraphics -framework UIKit -framework QuartzCore -framework Metal -framework MetalKit -o "$APP/LyricsShaders"
 cat > "$APP/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

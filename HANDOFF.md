@@ -1,6 +1,6 @@
 # Taurus-New Project Handoff Document
 
-**Date:** 2026-11-07
+**Date:** 2026-11-08
 
 **Repository:** `/Users/diyarabbas/Desktop/Taurus-New`
 
@@ -136,8 +136,8 @@ The goal of this project phase was to bring **Taurus-New** from its initial base
 
 ## 4. Current Build & Deliverables
 
-Latest build recorded here: November 7, 2026, Taurus 0.60.5 on Spotify 9.1.90.
-The lyrics-shaders IPA was built from the current working tree, including the existing changes
+Latest build verified here: November 8, 2026, Taurus 0.60.5 on Spotify 9.1.90.
+The lyrics-shaders performance IPA was built from the current working tree, including the existing changes
 from other tasks. Its filename is unique; the mod version was not bumped. Device signing and
 installation were not performed in this task.
 
@@ -145,8 +145,9 @@ installation were not performed in this task.
 |---|---|---|
 | **Compiled Tweak DEB** | `tweak/packages/com.spotipw_0.60.5_iphoneos-arm.deb` | Built & signed |
 | **Downloads Verification** | Injected `SpotifyAudioProbe.dylib` | 100% Verified passed |
-| **Latest Release IPA — Lyrics Shaders** | `out/Taurus-0.60.5-LyricsShaders-20261107-205155-AF5B87A8.ipa` (138,043,022 bytes, SHA-256: `cb56a6d53c8f0ec4a3638ceb8710b6d653023fd22b081a9a8a1c169319860f2b`) | Archive integrity and embedded shader renderer verified; no FLEX; requires signing for device installation |
-| **Release Build Log** | `out/lyrics-shaders-release-build.log` | Build completed; finished-IPA Downloads verification passed |
+| **Previous Release IPA — Lyrics Shaders** | `out/Taurus-0.60.5-LyricsShaders-20261107-205155-AF5B87A8.ipa` (138,043,022 bytes, SHA-256: `cb56a6d53c8f0ec4a3638ceb8710b6d653023fd22b081a9a8a1c169319860f2b`) | Archive integrity and embedded shader renderer verified; no FLEX; requires signing for device installation |
+| **Latest Release IPA — Lyrics Shader Performance** | `out/Taurus-0.60.5-LyricsShaders-Performance-20261107-235915-0F1FD8E7.ipa` (138,044,821 bytes, SHA-256: `b29fe80e0757effdcd4a8a1636f99297886382f0abd40b78f5f5ecff28b21c9c`) | ZIP integrity, production renderer markers, test-hook exclusion and no FLEX verified; requires signing for device installation |
+| **Release Build Log** | `out/lyrics-shaders-performance-build.log` | Build completed; finished-IPA Downloads verification passed |
 | **Previous Release IPA — November 6** | `out/Taurus-0.60.5-Fixes-20261106-230455.ipa` (138,034,696 bytes, SHA-256: `830dd8fe651f8eb5c8c01e945125f6943010056a0f5a8bd4e8d4e69c146455f6`) | Historical build evidence |
 
 ---
@@ -234,6 +235,8 @@ installation were not performed in this task.
 
 ## 6. Chroma-Style Lyrics Word Shaders (November 7, 2026)
 
+Historical implementation and verification below; section 7 records the subsequent performance fixes.
+
 ### Scope and implementation
 
 The five existing gradient word effects were replaced with procedural Metal fills: **Neon**
@@ -294,3 +297,71 @@ player. Confirm animated fills stay inside sung words and follow the letter moti
 and landscape; check pause/resume, seeking, track changes, leaving/reopening lyrics and Reduce
 Motion. Select Classic to confirm the original text returns. The simulator checks do not establish
 full Spotify integration, iOS 26 device behavior, or hardware performance/battery results.
+
+
+## 7. Lyrics Shader Performance Follow-up (November 8, 2026)
+
+User target: **iPhone 16e on iOS 27**. Reported symptoms include stuttering/delay,
+flicker/doubled glyphs, heat/battery use and crashes/freezes. No matching device or Spotify
+crash report was available. Do not describe the reported crashes as diagnosed or resolved,
+or the battery impact as measured. See [the investigation report](docs/LYRICS-SHADER-PERFORMANCE-2026-11-08.md)
+for findings, measurements and device acceptance steps.
+
+### Changes
+
+- One glyph atlas, reusable vertex buffer and draw call per word replace per-letter textures,
+  binds, draws and per-frame vertex-data allocation. Device/pipeline creation and texture uploads
+  run off the main thread; UIKit atlas rasterization stays on the main thread.
+- Independent render submissions avoid blocking every word behind a single drawable. Frames
+  are bounded to twelve globally (including retired effects), one per effect; pending uploads
+  are also bounded to twelve. Existing glyph/surface budgets remain.
+- Original UIKit ink is hidden only once a shader frame succeeds and restored on fallback.
+  Intensity blends static ink inside the shader. Letter glow is composed at the word surface.
+- Submission generations reject stale queued work after pause, seek or invalidation. Changed
+  bounds, inactive/offscreen/paused playback, Reduce Motion and failures use readable static text.
+- Shader rate: 60 fps normal, 30 in Low Power Mode or fair thermal state, 15 at serious thermal
+  state, static text at critical thermal state. The shared ProMotion display link is unchanged.
+- Memory warnings release active effects and impose a fifteen-second allocation cooldown.
+  Invalidated current words stay static; later words may resume shaders after the cooldown.
+  Temporary allocation-budget failures retry every half-second during an active word.
+- `SGRLyricsShaderPolicy.h` contains the rate policy. Harness-only delayed-submission hooks
+  are excluded from the production binary. No new Spotify hooks or Native UI changes.
+
+### Evidence and limits
+
+Mac GPU tests passed all five styles, animation/seek/alpha/intensity checks and rate-policy
+assertions. The production renderer's iOS 27 simulator harness passed invalid input, budgets,
+repeated lifecycle cleanup, five moving styles, joined Arabic, pause/resume and ink restoration.
+A delayed-submission test passed stale-frame rejection, recovery, resize fallback and memory
+warning cleanup. The harness was terminated after verification.
+
+A twelve-second simulator comparison with 73 successful effect creations and 31 word
+replacements measured creation p95 **7.851 → 1.138 ms**, maximum **109.137 → 13.582 ms**;
+main-thread tick p95 **0.173 → 0.222 ms**, maximum **13.821 → 1.455 ms**. These are single-run
+CPU timings, not actual iPhone frame rates. Typical tick time increased slightly; creation
+and replacement spikes decreased. The benchmark does not include glow or full Spotify UI.
+Local generated evidence is in `out/lyrics-shader-perf/`; the report preserves the measurements.
+
+Layer and whitespace checks passed. The full no-FLEX release pipeline completed and the latest
+IPA in section 4 passed ZIP integrity, embedded renderer/test-hook exclusion and finished-IPA
+Downloads checks. Existing unrelated deprecation/linker warnings remain in the build log.
+The version remains 0.60.5; the artifact filename is unique. No physical installation was done.
+
+### Repository context
+
+The user's fork is `https://gitlab.com/diyarit/taurus` (`fork`, main). Upstream is
+`https://gitlab.com/taurustweak/taurus` (`origin`). Existing upstream requests are
+[!29](https://gitlab.com/taurustweak/taurus/-/merge_requests/29) (baseline),
+[!30](https://gitlab.com/taurustweak/taurus/-/merge_requests/30) (Metal lyrics, source branch
+`feat/metal-lyrics-shaders`), and [!31](https://gitlab.com/taurustweak/taurus/-/merge_requests/31)
+(lock-screen/playback refinements). !30 and !31 depend on !29; their focused changes are on
+separate branches. Preserve work from other sessions when synchronizing main.
+
+### Next device check
+
+Sign and install the **LyricsShaders-Performance IPA in section 4** on the **iPhone 16e / iOS 27**,
+enable **Redesigned UI** and restart Spotify if needed. Open **Mod Settings → Lyrics → Adjust →
+Lyrics shader**, compare all five styles with Classic, and check moving text, pause/resume,
+seeking, rapid track changes, rotation, background/foreground, Reduce Motion and Low Power Mode.
+Compare heat and stutter during sustained playback with fixed brightness/background settings.
+If a crash or freeze recurs, capture its timestamp and matching crash report/hang trace.
