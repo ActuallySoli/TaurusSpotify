@@ -131,7 +131,7 @@ void SGRPlayerLyricsChanged(void) {
     SGRPlayerVisualiserUpdate();
     SGRGlyphButton *glyph = sg_lyricsGlyph;
     if (!glyph) return;
-    BOOL enabled = SGRPlayerLyricsAvailable() || SGRPlayerLyricsOpen(), open = SGRPlayerLyricsOpen();
+    BOOL enabled = YES, open = SGRPlayerLyricsOpen();
     BOOL wasOpen = [glyph.glyph.symbol isEqualToString:kLyricsSymbolOpen];
     if (glyph.enabled == enabled && wasOpen == open) return;
     // Lyrics turn up once the player has fetched them, well after the footer laid out: a fade, not a pop.

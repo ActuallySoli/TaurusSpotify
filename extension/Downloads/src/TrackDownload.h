@@ -15,3 +15,5 @@ void SAPCallReadOnlyService(NSString *serviceName, NSString *method, NSData *pay
                             void (^completion)(NSData *response, NSString *error));
 // Explicit user command. One verified endpoint, one send, no replay on timeout.
 void SAPCallOfflineCommandOnce(NSString *method,NSData *payload,void (^completion)(NSData *,NSString *));
+void SAPRemoveDownloadForURI(NSString *uriString);
+void SAPQueryOfflineItems(void);

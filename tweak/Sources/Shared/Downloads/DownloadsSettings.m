@@ -7,6 +7,7 @@
 #import "Settings/SGPageStyle.h"
 #import "Downloads.h"
 #import "DownloadsBridge.h"
+#import "Shared/Lyrics/Lyrics.h"
 
 static NSString *const kPixieURL = @"https://github.com/Glongq/Vitrine-Pixie";
 
@@ -20,6 +21,30 @@ static void say(NSString *title, NSString *message) {
 
 static void changed(void) {
     [NSNotificationCenter.defaultCenter postNotificationName:SGDownloadsDidChangeNotification object:nil];
+}
+
+static void resetLyricsCachePrompt(void) {
+    NSUInteger count = SGKaraokeDownloadedLyricsCount();
+    NSString *msg = [NSString stringWithFormat:@"%lu saved lyrics in offline storage.", (unsigned long)count];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Offline lyrics cache"
+                                                                   message:msg
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Delete & Rescan" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        SGKaraokeResetLyricsCache(^{
+            Class<SGDownloadsCompanion> companion = SGDownloadsCompanion();
+            if ([companion respondsToSelector:@selector(syncOfflineTracks)]) {
+                [companion syncOfflineTracks];
+            }
+            changed();
+        });
+        changed();
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Delete" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        SGKaraokeResetLyricsCache(nil);
+        changed();
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [SGTopController() presentViewController:alert animated:YES completion:nil];
 }
 
 // One check or slot command at a time: the rows show "Working…" and ignore taps until it answers.
@@ -345,22 +370,36 @@ UIViewController *SGDownloadsSettingsPage(void) {
         SGModRow *why = SGWarningRow(@"Downloads are unavailable in this build", @"Tap to see why", ^{
             say(@"Downloads", SGDownloadsUnavailableReason());
         });
+        SGModRow *offlineLyrics = symbolRow(SGStatActionRow(@"Offline lyrics cache", @"Tap to delete cache and rescan", ^NSString * {
+            NSUInteger cached = SGKaraokeDownloadedLyricsCount();
+            NSUInteger queued = SGKaraokeQueuedLyricsCount();
+            if (queued > 0) return [NSString stringWithFormat:@"%lu saved (%lu queued)", (unsigned long)cached, (unsigned long)queued];
+            return [NSString stringWithFormat:@"%lu saved", (unsigned long)cached];
+        }, ^{ resetLyricsCachePrompt(); }), @"music.note.list", nil);
+        offlineLyrics.refreshOn = SGKaraokeLinesDidChangeNotification;
         return [[SGDownloadsPage alloc] initWithTitle:@"Downloads" intro:nil sections:@[
             SGSection(nil, @[why]),
+            SGSection(@"[EXPERIMENTAL] Lyrics", @[offlineLyrics]),
             SGSection(@"About", @[symbolRow(SGLinkRow(@"Pixie Download Manager", @"Glongq/Vitrine-Pixie, where the downloads come from", kPixieURL), @"link", nil)]),
         ] footer:nil];
     }
     Class<SGDownloadsCompanion> companion = SGDownloadsCompanion();
     SGSetEnabled(SGKeyDownloadsDiagnostics, [companion diagnosticsEnabled]);
 
-    SGModRow *download = symbolRow(SGActionRow(@"Download current track", @"The song playing right now", ^{ [SGDownloadsCompanion() downloadTrack]; }),
-                                   @"arrow.down.circle.fill", nil);
+    SGModRow *download = symbolRow(SGActionRow(@"Download current track", @"The song playing right now", ^{
+        [SGDownloadsCompanion() downloadTrack];
+        NSString *playing = SGKaraokePlayingTrack();
+        if (playing) SGDownloadLyricsForTrack(playing);
+    }), @"arrow.down.circle.fill", nil);
     download.visible = ^BOOL { return !SGDownloadsActive(); };
     SGModRow *status = symbolRow(SGActionRow(@"Track download status", @"A download is running", ^{ [SGDownloadsCompanion() downloadTrack]; }),
                                  @"arrow.down.circle.fill", nil);
     status.visible = ^BOOL { return SGDownloadsActive(); };
-    SGModRow *album = symbolRow(SGActionRow(@"Download current track's album", @"Every track on its album", ^{ [SGDownloadsCompanion() downloadAlbum]; }),
-                                @"square.stack.fill", nil);
+    SGModRow *album = symbolRow(SGActionRow(@"Download current track's album", @"Every track on its album", ^{
+        [SGDownloadsCompanion() downloadAlbum];
+        NSString *playing = SGKaraokePlayingTrack();
+        if (playing) SGDownloadLyricsForTrack(playing);
+    }), @"square.stack.fill", nil);
     SGModRow *check = symbolRow(SGActionRow(@"Check current track", @"Is it saved for offline listening?", ^{ [SGDownloadsCompanion() checkTrack]; }),
                                 @"checkmark.circle.fill", nil);
     SGModRow *cancel = symbolRow(SGActionRow(@"Cancel download", nil, ^{ [SGDownloadsCompanion() cancelDownload]; changed(); }),
@@ -386,11 +425,25 @@ UIViewController *SGDownloadsSettingsPage(void) {
     SGModRow *send = symbolRow(SGActionRow(@"Send log", @"One package: report, events and download history", ^{ [SGDownloadsCompanion() sendLog]; }),
                                @"square.and.arrow.up", nil);
 
+    SGModRow *offlineLyrics = symbolRow(SGStatActionRow(@"Offline lyrics cache", @"Tap to delete cache and rescan", ^NSString * {
+        NSUInteger cached = SGKaraokeDownloadedLyricsCount();
+        NSUInteger queued = SGKaraokeQueuedLyricsCount();
+        if (queued > 0) return [NSString stringWithFormat:@"%lu saved (%lu queued)", (unsigned long)cached, (unsigned long)queued];
+        return [NSString stringWithFormat:@"%lu saved", (unsigned long)cached];
+    }, ^{ resetLyricsCachePrompt(); }), @"music.note.list", nil);
+    offlineLyrics.refreshOn = SGKaraokeLinesDidChangeNotification;
+
+    SGModRow *scanOffline = symbolRow(SGActionRow(@"Scan and download lyrics", @"Find and queue lyrics for previously downloaded songs", ^{
+        if ([companion respondsToSelector:@selector(syncOfflineTracks)]) [companion syncOfflineTracks];
+        changed();
+    }), @"arrow.triangle.2.circlepath", nil);
+
     NSArray<SGModSection *> *sections = @[
         SGNotedSection(@"Current track", @[download, status, album, check, cancel], @"Tracks are saved in Spotify for offline listening."),
         SGNotedSection(@"Download compatibility", @[mode, quotas, slots, enable],
                        @"5 licenses = up to 5 devices with offline music.\n\nOnly change settings in this menu if downloads are not working."),
         SGSection(@"Status", @[log]),
+        SGSection(@"[EXPERIMENTAL] Lyrics", @[offlineLyrics, scanOffline]),
         SGNotedSection(@"Diagnostics", @[diagnostics, send], @"Enable Diagnostics for detailed passive events."),
         SGNotedSection(@"About", @[symbolRow(SGLinkRow(@"Pixie Download Manager", @"Glongq/Vitrine-Pixie, the engine behind this page", kPixieURL), @"link", nil)],
                        @"Spotify's own download buttons on playlists, albums and menus work too. Music stays in Spotify's offline storage."),
