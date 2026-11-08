@@ -78,6 +78,37 @@ int main(void) {
             for (NSUInteger i = 0; i < a.length; i++) error += abs((int)aa[i] - (int)bb[i]);
             CHECK(a.length == b.length && error / a.length < 8, "preview matches the video's first frame, including rotation");
         }
+        // Beautiful Lyrics (Full screen) karaoke word sweep + pause freeze-frame verification.
+        SGLyricsClipWord words[] = {
+            {0, 7, 0.0, 0.6},
+            {8, 7, 0.6, 1.4},
+            {16, 6, 1.4, 2.2},
+        };
+        SGLyricsClipKaraokeSpec specStart = {
+            .previous = @"Yesterday's line above",
+            .line = @"Dancing through shadow",
+            .next = @"Tomorrow's line below",
+            .words = words,
+            .wordCount = 3,
+            .elapsedInLine = 0.1,
+            .sungDuration = 2.2,
+            .clipDuration = 3.0,
+            .songTime = 12.0,
+            .scrollIn = YES,
+        };
+        SGLyricsClipKaraokeSpec specMid = specStart;
+        specMid.elapsedInLine = 1.5;
+        specMid.scrollIn = NO;
+        CGImageRef kFrameStart = SGLyricsClipKaraokeFrame(backdrop, cover, size, SGLyricsClipStill, SGLyricsClipWords, specStart);
+        CGImageRef kFrameMid = SGLyricsClipKaraokeFrame(backdrop, cover, size, SGLyricsClipStill, SGLyricsClipWords, specMid);
+        CHECK(kFrameStart != NULL && kFrameMid != NULL, "Beautiful Lyrics freeze-frames render at arbitrary word positions");
+        CHECK(![pixels(kFrameStart) isEqual:pixels(kFrameMid)], "Beautiful Lyrics karaoke word sweep advances brightness across words");
+        save(kFrameStart, @"harness/lyrics-clip/build/karaoke-start.png");
+        save(kFrameMid, @"harness/lyrics-clip/build/karaoke-mid.png");
+        NSURL *kFile = [NSURL fileURLWithPath:@"harness/lyrics-clip/build/karaoke.mp4"];
+        BOOL kWritten = SGLyricsClipWriteKaraoke(kFile, backdrop, cover, size, SGLyricsClipAnimated, SGLyricsClipWords, specStart);
+        CHECK(kWritten, "Beautiful Lyrics animated karaoke clip writes to H.264");
+        CGImageRelease(kFrameStart); CGImageRelease(kFrameMid);
         CGImageRelease(preview); CGImageRelease(decoded); CGImageRelease(loop); CGImageRelease(later);
         CGImageRelease(blank); CGImageRelease(backdrop); CGImageRelease(cover);
     }

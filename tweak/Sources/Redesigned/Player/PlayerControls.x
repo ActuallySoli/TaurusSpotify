@@ -276,11 +276,12 @@ static UILabel *monospaced(UIView *host, NSString *identifier, const void *findK
 // its own use the same class.
 %hook _TtC28EncoreConsumerMobile_BaseKit14PlayButtonView
 - (void)uiButtonTapped {
+    if ((UIView *)self == sg_playView) {
+        playTapped();
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{ SGLog(@"redesign player: play glyph turned at the tap"); });
+    }
     %orig;
-    if ((UIView *)self != sg_playView) return;
-    playTapped();
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ SGLog(@"redesign player: play glyph turned at the tap"); });
 }
 %end
 

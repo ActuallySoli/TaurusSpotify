@@ -151,14 +151,6 @@ static CGImageRef newWords(NSString *previous, NSString *line, NSString *next, C
     return words;
 }
 
-// A frame `phase` of the way through the loop, 0 to 1, into `context`.
-static void drawFrame(CGContextRef context, CGImageRef backdrop, CGImageRef words, CGSize size, double phase) {
-    CGFloat grow = kBreath * (1 - cos(2 * M_PI * phase)) / 2;
-    CGRect bounds = {CGPointZero, size};
-    CGContextDrawImage(context, CGRectInset(bounds, -size.width * grow / 2, -size.height * grow / 2), backdrop);
-    if (words) CGContextDrawImage(context, bounds, words);
-}
-
 CGImageRef SGLyricsClipFrame(CGImageRef backdrop, NSString *line, NSString *next, CGSize size) {
     return SGLyricsClipFrameIn(backdrop, NULL, line, next, size, SGLyricsClipStill, SGLyricsClipWords);
 }
@@ -171,6 +163,221 @@ NSArray<NSString *> *SGLyricsClipCompositionNames(void) {
 
 static CTFontRef lineFont(CGFloat size) CF_RETURNS_RETAINED {
     return CTFontCreateUIFontForLanguage(kCTFontUIFontEmphasizedSystem, size, NULL);
+}
+
+typedef struct {
+    CGSize size;
+    CGFloat activeFontSize;
+    CGFloat neighbourFontSize;
+    CGRect prevBox;
+    CGRect lineBox;
+    CGRect nextBox;
+    CGImageRef neighboursImage;
+} KaraokePlan;
+
+static CGFloat suggestTextHeight(NSString *text, CGFloat fontSize, CGFloat width) {
+    if (!text.length) return 0;
+    CTFontRef font = lineFont(fontSize);
+    NSDictionary *attrs = @{(id)kCTFontAttributeName: (__bridge id)font};
+    NSAttributedString *attr = [[NSAttributedString alloc] initWithString:text attributes:attrs];
+    CTFramesetterRef setter = CTFramesetterCreateWithAttributedString((__bridge CFAttributedStringRef)attr);
+    CGSize fits = CTFramesetterSuggestFrameSizeWithConstraints(setter, CFRangeMake(0, 0), NULL,
+                                                               CGSizeMake(width, CGFLOAT_MAX), NULL);
+    CFRelease(setter);
+    CFRelease(font);
+    return ceil(fits.height) + 2;
+}
+
+static void drawPlainBlock(CGContextRef context, NSString *text, CGFloat fontSize, CGFloat alpha, CGRect box) {
+    if (!text.length || CGRectIsEmpty(box)) return;
+    CTFontRef font = lineFont(fontSize);
+    CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGFloat rgba[] = {1, 1, 1, alpha};
+    CGColorRef color = CGColorCreate(space, rgba);
+    NSAttributedString *attr = [[NSAttributedString alloc] initWithString:text attributes:@{
+        (id)kCTFontAttributeName: (__bridge id)font,
+        (id)kCTForegroundColorAttributeName: (__bridge id)color,
+    }];
+    CTFramesetterRef setter = CTFramesetterCreateWithAttributedString((__bridge CFAttributedStringRef)attr);
+    CGPathRef path = CGPathCreateWithRect(box, NULL);
+    CTFrameRef frame = CTFramesetterCreateFrame(setter, CFRangeMake(0, 0), path, NULL);
+    CTFrameDraw(frame, context);
+    CFRelease(frame);
+    CGPathRelease(path);
+    CFRelease(setter);
+    CGColorRelease(color);
+    CGColorSpaceRelease(space);
+    CFRelease(font);
+}
+
+static KaraokePlan makeKaraokePlan(NSString *previous, NSString *line, NSString *next, CGSize size) {
+    KaraokePlan plan = {0};
+    plan.size = size;
+    CGFloat width = round(size.width * kColumn);
+    CGFloat x = round((size.width - width) / 2);
+    CGFloat baseFont = size.width * kFont;
+    CGFloat prevH = 0, lineH = 0, nextH = 0, gap = 0, totalH = 0;
+    for (CGFloat scale = 1.0; scale >= kSmallest - 0.01; scale -= 0.08) {
+        plan.activeFontSize = baseFont * scale;
+        plan.neighbourFontSize = plan.activeFontSize * 0.86;
+        gap = round(plan.activeFontSize * 0.52);
+        prevH = suggestTextHeight(previous, plan.neighbourFontSize, width);
+        lineH = suggestTextHeight(line, plan.activeFontSize, width);
+        nextH = suggestTextHeight(next, plan.neighbourFontSize, width);
+        totalH = (prevH > 0 ? prevH + gap : 0) + lineH + (nextH > 0 ? (lineH > 0 || prevH > 0 ? gap : 0) + nextH : 0);
+        if (totalH <= size.height * kTallest) break;
+    }
+    CGFloat centreY = size.height * (1 - kCentreY);
+    CGFloat topY = round(centreY + totalH / 2);
+    CGFloat cursorY = topY;
+    if (prevH > 0) {
+        cursorY -= prevH;
+        plan.prevBox = CGRectMake(x, cursorY, width, prevH);
+        cursorY -= gap;
+    }
+    if (lineH > 0) {
+        cursorY -= lineH;
+        plan.lineBox = CGRectMake(x, cursorY, width, lineH);
+        cursorY -= gap;
+    }
+    if (nextH > 0) {
+        cursorY -= nextH;
+        plan.nextBox = CGRectMake(x, cursorY, width, nextH);
+    }
+    if (prevH > 0 || nextH > 0) {
+        CGContextRef ctx = newContext(size, NULL, 0);
+        CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGFloat shade[] = {0, 0, 0, kShadowAlpha * 0.7};
+        CGColorRef shadowColor = CGColorCreate(space, shade);
+        CGContextSetShadowWithColor(ctx, CGSizeZero, plan.neighbourFontSize * kShadowBlur, shadowColor);
+        CGColorRelease(shadowColor);
+        CGColorSpaceRelease(space);
+        if (prevH > 0) drawPlainBlock(ctx, previous, plan.neighbourFontSize, 0.30, plan.prevBox);
+        if (nextH > 0) drawPlainBlock(ctx, next, plan.neighbourFontSize, lineH > 0 ? 0.36 : 0.44, plan.nextBox);
+        CGContextSetShadowWithColor(ctx, CGSizeZero, 0, NULL);
+        uint8_t *base = CGBitmapContextGetData(ctx);
+        size_t bpr = CGBitmapContextGetBytesPerRow(ctx);
+        uint32_t kernel = ((uint32_t)MAX(3, lround(plan.neighbourFontSize * 0.12))) | 1;
+        if (base && kernel >= 3) {
+            size_t w = (size_t)size.width, h = (size_t)size.height;
+            uint8_t *scratch = malloc(h * bpr);
+            if (scratch) {
+                vImage_Buffer src = {base, h, w, bpr};
+                vImage_Buffer dst = {scratch, h, w, bpr};
+                if (vImageTentConvolve_ARGB8888(&src, &dst, NULL, 0, 0, kernel, kernel, NULL, kvImageEdgeExtend) == kvImageNoError) {
+                    memcpy(base, scratch, h * bpr);
+                }
+                free(scratch);
+            }
+        }
+        plan.neighboursImage = CGBitmapContextCreateImage(ctx);
+        CGContextRelease(ctx);
+    }
+    return plan;
+}
+
+static void freeKaraokePlan(KaraokePlan plan) {
+    CGImageRelease(plan.neighboursImage);
+}
+
+static NSUInteger buildAutoWords(NSString *line, double sungDuration, SGLyricsClipWord **outWords) {
+    *outWords = NULL;
+    if (!line.length) return 0;
+    NSMutableArray<NSValue *> *ranges = [NSMutableArray array];
+    [line enumerateSubstringsInRange:NSMakeRange(0, line.length)
+                             options:NSStringEnumerationByWords | NSStringEnumerationSubstringNotRequired
+                          usingBlock:^(NSString *sub, NSRange wordRange, NSRange enclosingRange, BOOL *stop) {
+        [ranges addObject:[NSValue valueWithRange:enclosingRange.length ? enclosingRange : wordRange]];
+    }];
+    if (!ranges.count) {
+        [ranges addObject:[NSValue valueWithRange:NSMakeRange(0, line.length)]];
+    }
+    NSUInteger count = ranges.count;
+    SGLyricsClipWord *words = calloc(count, sizeof(SGLyricsClipWord));
+    double dur = MAX(sungDuration, 0.8);
+    double step = dur / (double)count;
+    for (NSUInteger i = 0; i < count; i++) {
+        NSRange r = [ranges[i] rangeValue];
+        words[i].location = r.location;
+        words[i].length = r.length;
+        words[i].start = (double)i * step;
+        words[i].end = (double)(i + 1) * step;
+    }
+    *outWords = words;
+    return count;
+}
+
+static void drawKaraokeActiveLine(CGContextRef context, KaraokePlan plan, NSString *line,
+                                  const SGLyricsClipWord *words, NSUInteger wordCount,
+                                  double elapsed, BOOL sweepEnabled, CGFloat yOffset) {
+    if (!line.length || CGRectIsEmpty(plan.lineBox)) return;
+    CTFontRef font = lineFont(plan.activeFontSize);
+    CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGFloat unlitRGBA[] = {1, 1, 1, sweepEnabled ? 0.36 : 1.0};
+    CGColorRef unlitColor = CGColorCreate(space, unlitRGBA);
+    NSMutableAttributedString *attr = [[NSMutableAttributedString alloc] initWithString:line attributes:@{
+        (id)kCTFontAttributeName: (__bridge id)font,
+        (id)kCTForegroundColorAttributeName: (__bridge id)unlitColor,
+    }];
+    CGColorRelease(unlitColor);
+    if (sweepEnabled && words && wordCount > 0) {
+        CGFloat litRGBA[] = {1, 1, 1, 1.0};
+        CGColorRef litColor = CGColorCreate(space, litRGBA);
+        NSUInteger lineLen = line.length;
+        for (NSUInteger i = 0; i < wordCount; i++) {
+            SGLyricsClipWord w = words[i];
+            if (w.location >= lineLen || w.length == 0) continue;
+            NSUInteger len = MIN(w.length, lineLen - w.location);
+            if (elapsed <= w.start) continue;
+            if (elapsed >= w.end) {
+                [attr addAttribute:(id)kCTForegroundColorAttributeName value:(__bridge id)litColor
+                             range:NSMakeRange(w.location, len)];
+                continue;
+            }
+            double u = (elapsed - w.start) / MAX(0.06, w.end - w.start);
+            for (NSUInteger c = 0; c < len; c++) {
+                double cu = MIN(MAX(u * (double)len - (double)c, 0.0), 1.0);
+                double s = cu * cu * (3.0 - 2.0 * cu);
+                CGFloat a = (CGFloat)(0.36 + 0.64 * s);
+                CGFloat charRGBA[] = {1, 1, 1, a};
+                CGColorRef charColor = CGColorCreate(space, charRGBA);
+                [attr addAttribute:(id)kCTForegroundColorAttributeName value:(__bridge id)charColor
+                             range:NSMakeRange(w.location + c, 1)];
+                CGColorRelease(charColor);
+            }
+        }
+        CGColorRelease(litColor);
+    }
+    CGContextSaveGState(context);
+    CGFloat shade[] = {0, 0, 0, kShadowAlpha};
+    CGColorRef shadowColor = CGColorCreate(space, shade);
+    CGContextSetShadowWithColor(context, CGSizeZero, plan.activeFontSize * kShadowBlur, shadowColor);
+    CGColorRelease(shadowColor);
+    CTFramesetterRef setter = CTFramesetterCreateWithAttributedString((__bridge CFAttributedStringRef)attr);
+    CGRect box = CGRectOffset(plan.lineBox, 0, yOffset);
+    CGPathRef path = CGPathCreateWithRect(box, NULL);
+    CTFrameRef frame = CTFramesetterCreateFrame(setter, CFRangeMake(0, 0), path, NULL);
+    CTFrameDraw(frame, context);
+    CFRelease(frame);
+    CGPathRelease(path);
+    CFRelease(setter);
+    CGContextRestoreGState(context);
+    CGColorSpaceRelease(space);
+    CFRelease(font);
+}
+
+static void drawKaraokeFrameInContext(CGContextRef context, CGImageRef backdrop, KaraokePlan plan,
+                                      NSString *line, const SGLyricsClipWord *words, NSUInteger wordCount,
+                                      double elapsed, double breathPhase, BOOL sweepEnabled, CGFloat yOffset) {
+    CGFloat grow = kBreath * (1 - cos(2 * M_PI * breathPhase)) / 2;
+    CGRect bounds = {CGPointZero, plan.size};
+    if (backdrop) {
+        CGContextDrawImage(context, CGRectInset(bounds, -plan.size.width * grow / 2, -plan.size.height * grow / 2), backdrop);
+    }
+    if (plan.neighboursImage) {
+        CGContextDrawImage(context, CGRectOffset(bounds, 0, yOffset), plan.neighboursImage);
+    }
+    drawKaraokeActiveLine(context, plan, line, words, wordCount, elapsed, sweepEnabled, yOffset);
 }
 
 // How tall the line draws, wrapped at `width`.
@@ -677,16 +884,132 @@ CGImageRef SGLyricsClipFrameIn(CGImageRef backdrop, CGImageRef cover, NSString *
     return SGLyricsClipFrameInAtTime(backdrop, cover, line, next, size, style, composition, 0);
 }
 
+CGImageRef SGLyricsClipKaraokeFrame(CGImageRef backdrop, CGImageRef cover, CGSize size,
+                                    SGLyricsClipStyle style, SGLyricsClipComposition composition,
+                                    SGLyricsClipKaraokeSpec spec) {
+    if (composition != SGLyricsClipWords) {
+        return SGLyricsClipFrameInAtTime(backdrop, cover, spec.line, spec.next, size, style, composition, spec.songTime);
+    }
+    KaraokePlan plan = makeKaraokePlan(spec.previous, spec.line, spec.next, size);
+    SGLyricsClipWord *autoWords = NULL;
+    const SGLyricsClipWord *words = spec.words;
+    NSUInteger wordCount = spec.wordCount;
+    double clipDur = spec.clipDuration > 0 ? spec.clipDuration : (double)kLoopSeconds;
+    double sungDur = spec.sungDuration > 0 ? spec.sungDuration : MIN(MAX(clipDur * 0.72, 1.2), 3.6);
+    BOOL sweepEnabled = (style == SGLyricsClipAnimated || spec.elapsedInLine > 0.001 || spec.wordCount > 0);
+    if (sweepEnabled && !words && spec.line.length > 0) {
+        wordCount = buildAutoWords(spec.line, sungDur, &autoWords);
+        words = autoWords;
+    }
+    CGContextRef context = newContext(size, NULL, 0);
+    double breathPhase = isfinite(spec.songTime) ? spec.songTime / (double)kLoopSeconds : 0.0;
+    double elapsed = MAX(0.0, spec.elapsedInLine);
+    // When rendering the preview image for an animated clip at the start of a line, hold a slight
+    // initial lead (0.12 s) so the first word is already beginning its sweep and matches early playback.
+    if (style == SGLyricsClipAnimated && elapsed == 0.0 && wordCount > 0) {
+        elapsed = MIN(0.12, words[0].end * 0.5);
+    }
+    drawKaraokeFrameInContext(context, backdrop, plan, spec.line, words, wordCount, elapsed, breathPhase, sweepEnabled, 0);
+    CGImageRef frame = CGBitmapContextCreateImage(context);
+    CGContextRelease(context);
+    free(autoWords);
+    freeKaraokePlan(plan);
+    return frame;
+}
+
+BOOL SGLyricsClipWriteKaraoke(NSURL *file, CGImageRef backdrop, CGImageRef cover, CGSize size,
+                              SGLyricsClipStyle style, SGLyricsClipComposition composition,
+                              SGLyricsClipKaraokeSpec spec) {
+    if (composition != SGLyricsClipWords) {
+        return SGLyricsClipWriteInAtTime(file, backdrop, cover, spec.line, spec.next, size, style, composition, spec.songTime);
+    }
+    NSURL *partial = [file URLByAppendingPathExtension:@"partial"];
+    [NSFileManager.defaultManager removeItemAtURL:partial error:nil];
+    AVAssetWriter *writer = [AVAssetWriter assetWriterWithURL:partial fileType:AVFileTypeMPEG4 error:nil];
+    if (!writer) return NO;
+    double clipDur = style == SGLyricsClipAnimated
+        ? MIN(MAX(spec.clipDuration > 0 ? spec.clipDuration : (double)kLoopSeconds, 2.0), 6.0)
+        : (double)kStillSeconds;
+    int32_t frames = style == SGLyricsClipAnimated ? MAX((int32_t)lround(clipDur * kFPS), kFPS * 2) : 1;
+    CMTime length = style == SGLyricsClipAnimated ? CMTimeMake(frames, kFPS) : CMTimeMake(kStillSeconds, 1);
+    AVAssetWriterInput *input = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:@{
+        AVVideoCodecKey: AVVideoCodecTypeH264,
+        AVVideoWidthKey: @(size.width),
+        AVVideoHeightKey: @(size.height),
+        AVVideoCompressionPropertiesKey: @{AVVideoAverageBitRateKey: @(2000000), AVVideoMaxKeyFrameIntervalKey: @(kFPS)},
+    }];
+    AVAssetWriterInputPixelBufferAdaptor *adaptor = [AVAssetWriterInputPixelBufferAdaptor assetWriterInputPixelBufferAdaptorWithAssetWriterInput:input
+        sourcePixelBufferAttributes:@{
+            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+            (id)kCVPixelBufferWidthKey: @(size.width),
+            (id)kCVPixelBufferHeightKey: @(size.height),
+        }];
+    if (![writer canAddInput:input]) return NO;
+    [writer addInput:input];
+    if (![writer startWriting]) return NO;
+    [writer startSessionAtSourceTime:kCMTimeZero];
+
+    KaraokePlan plan = makeKaraokePlan(spec.previous, spec.line, spec.next, size);
+    SGLyricsClipWord *autoWords = NULL;
+    const SGLyricsClipWord *words = spec.words;
+    NSUInteger wordCount = spec.wordCount;
+    double sungDur = spec.sungDuration > 0 ? spec.sungDuration : MIN(MAX(clipDur * 0.72, 1.2), 3.6);
+    BOOL sweepEnabled = (style == SGLyricsClipAnimated || spec.elapsedInLine > 0.001 || spec.wordCount > 0);
+    if (sweepEnabled && !words && spec.line.length > 0) {
+        wordCount = buildAutoWords(spec.line, sungDur, &autoWords);
+        words = autoWords;
+    }
+    double baseSongTime = isfinite(spec.songTime) ? spec.songTime : 0.0;
+    BOOL ok = YES;
+    for (int32_t i = 0; i < frames && ok; i++) {
+        while (!input.readyForMoreMediaData && writer.status == AVAssetWriterStatusWriting) [NSThread sleepForTimeInterval:0.002];
+        CVPixelBufferRef buffer = NULL;
+        ok = writer.status == AVAssetWriterStatusWriting && adaptor.pixelBufferPool
+            && CVPixelBufferPoolCreatePixelBuffer(NULL, adaptor.pixelBufferPool, &buffer) == kCVReturnSuccess;
+        if (!ok) break;
+        CVPixelBufferLockBaseAddress(buffer, 0);
+        CGContextRef context = newContext(size, CVPixelBufferGetBaseAddress(buffer), CVPixelBufferGetBytesPerRow(buffer));
+        double frameTime = style == SGLyricsClipAnimated ? (double)i / (double)kFPS : 0.0;
+        double elapsed = MAX(0.0, spec.elapsedInLine) + frameTime;
+        double breathPhase = (baseSongTime + frameTime) / (double)kLoopSeconds;
+        CGFloat yOffset = 0;
+        if (style == SGLyricsClipAnimated && spec.scrollIn && frameTime < 0.28) {
+            double u = frameTime / 0.28;
+            double ease = 1.0 - (1.0 - u) * (1.0 - u) * (1.0 - u);
+            yOffset = -plan.activeFontSize * 0.42 * (CGFloat)(1.0 - ease);
+        }
+        drawKaraokeFrameInContext(context, backdrop, plan, spec.line, words, wordCount, elapsed, breathPhase, sweepEnabled, yOffset);
+        CGContextRelease(context);
+        CVPixelBufferUnlockBaseAddress(buffer, 0);
+        ok = [adaptor appendPixelBuffer:buffer withPresentationTime:CMTimeMake(i, kFPS)];
+        CVPixelBufferRelease(buffer);
+    }
+    free(autoWords);
+    freeKaraokePlan(plan);
+    if (!ok) {
+        [writer cancelWriting];
+        return NO;
+    }
+    [input markAsFinished];
+    [writer endSessionAtSourceTime:length];
+    dispatch_semaphore_t written = dispatch_semaphore_create(0);
+    [writer finishWritingWithCompletionHandler:^{ dispatch_semaphore_signal(written); }];
+    dispatch_semaphore_wait(written, DISPATCH_TIME_FOREVER);
+    if (writer.status != AVAssetWriterStatusCompleted) return NO;
+    [NSFileManager.defaultManager removeItemAtURL:file error:nil];
+    return [NSFileManager.defaultManager moveItemAtURL:partial toURL:file error:nil];
+}
+
 CGImageRef SGLyricsClipFrameInAtTime(CGImageRef backdrop, CGImageRef cover, NSString *line, NSString *next, CGSize size,
                                     SGLyricsClipStyle style, SGLyricsClipComposition composition, double from) {
     if (composition == SGLyricsClipWords) {
-        CGImageRef words = newWords(NULL, line, next, size, NULL);
-        CGContextRef context = newContext(size, NULL, 0);
-        drawFrame(context, backdrop, words, size, 0);
-        CGImageRef frame = CGBitmapContextCreateImage(context);
-        CGContextRelease(context);
-        CGImageRelease(words);
-        return frame;
+        SGLyricsClipKaraokeSpec spec = {
+            .previous = nil, .line = line, .next = next,
+            .words = NULL, .wordCount = 0,
+            .elapsedInLine = 0, .sungDuration = 0, .clipDuration = kLoopSeconds,
+            .songTime = isfinite(from) ? from : 0, .scrollIn = NO,
+        };
+        return SGLyricsClipKaraokeFrame(backdrop, cover, size, style, composition, spec);
     }
     CGContextRef context = newContext(size, NULL, 0);
     drawComposition(context, backdrop, cover, line, size, isfinite(from) ? from / kLoopSeconds : 0,
@@ -703,7 +1026,16 @@ BOOL SGLyricsClipWriteIn(NSURL *file, CGImageRef backdrop, CGImageRef cover, NSS
 
 BOOL SGLyricsClipWriteInAtTime(NSURL *file, CGImageRef backdrop, CGImageRef cover, NSString *line, NSString *next, CGSize size,
                               SGLyricsClipStyle style, SGLyricsClipComposition composition, double from) {
-    if (composition == SGLyricsClipWords) return SGLyricsClipWrite(file, backdrop, line, next, size, style);
+    if (composition == SGLyricsClipWords) {
+        SGLyricsClipKaraokeSpec spec = {
+            .previous = nil, .line = line, .next = next,
+            .words = NULL, .wordCount = 0,
+            .elapsedInLine = 0, .sungDuration = 0, .clipDuration = kLoopSeconds,
+            .songTime = isfinite(from) ? from : 0,
+            .scrollIn = (style == SGLyricsClipAnimated),
+        };
+        return SGLyricsClipWriteKaraoke(file, backdrop, cover, size, style, composition, spec);
+    }
     // Written beside the file and moved over it once whole, so a clip cut off halfway is never found.
     NSURL *partial = [file URLByAppendingPathExtension:@"partial"];
     [NSFileManager.defaultManager removeItemAtURL:partial error:nil];
@@ -773,59 +1105,13 @@ NSString *SGLyricsClipLook(NSURL *motion, SGLyricsClipStyle style, SGLyricsClipC
 }
 
 BOOL SGLyricsClipWrite(NSURL *file, CGImageRef backdrop, NSString *line, NSString *next, CGSize size, SGLyricsClipStyle style) {
-    // Written beside the file and moved over it once whole, so a clip cut off halfway is never found.
-    NSURL *partial = [file URLByAppendingPathExtension:@"partial"];
-    [NSFileManager.defaultManager removeItemAtURL:partial error:nil];
-    AVAssetWriter *writer = [AVAssetWriter assetWriterWithURL:partial fileType:AVFileTypeMPEG4 error:nil];
-    if (!writer) return NO;
-    int32_t frames = style == SGLyricsClipAnimated ? kLoopSeconds * kFPS : 1;
-    CMTime length = CMTimeMake(style == SGLyricsClipAnimated ? kLoopSeconds : kStillSeconds, 1);
-    AVAssetWriterInput *input = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:@{
-        AVVideoCodecKey: AVVideoCodecTypeH264,
-        AVVideoWidthKey: @(size.width),
-        AVVideoHeightKey: @(size.height),
-        AVVideoCompressionPropertiesKey: @{AVVideoAverageBitRateKey: @(2000000), AVVideoMaxKeyFrameIntervalKey: @(kFPS)},
-    }];
-    AVAssetWriterInputPixelBufferAdaptor *adaptor = [AVAssetWriterInputPixelBufferAdaptor assetWriterInputPixelBufferAdaptorWithAssetWriterInput:input
-        sourcePixelBufferAttributes:@{
-            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
-            (id)kCVPixelBufferWidthKey: @(size.width),
-            (id)kCVPixelBufferHeightKey: @(size.height),
-        }];
-    if (![writer canAddInput:input]) return NO;
-    [writer addInput:input];
-    if (![writer startWriting]) return NO;
-    [writer startSessionAtSourceTime:kCMTimeZero];
-    CGImageRef words = newWords(nil, line, next, size, NULL);
-    BOOL ok = YES;
-    for (int32_t i = 0; i < frames && ok; i++) {
-        while (!input.readyForMoreMediaData && writer.status == AVAssetWriterStatusWriting) [NSThread sleepForTimeInterval:0.002];
-        CVPixelBufferRef buffer = NULL;
-        ok = writer.status == AVAssetWriterStatusWriting && adaptor.pixelBufferPool
-            && CVPixelBufferPoolCreatePixelBuffer(NULL, adaptor.pixelBufferPool, &buffer) == kCVReturnSuccess;
-        if (!ok) break;
-        CVPixelBufferLockBaseAddress(buffer, 0);
-        CGContextRef context = newContext(size, CVPixelBufferGetBaseAddress(buffer), CVPixelBufferGetBytesPerRow(buffer));
-        drawFrame(context, backdrop, words, size, (double)i / frames);
-        CGContextRelease(context);
-        CVPixelBufferUnlockBaseAddress(buffer, 0);
-        ok = [adaptor appendPixelBuffer:buffer withPresentationTime:CMTimeMake(i, kFPS)];
-        CVPixelBufferRelease(buffer);
-    }
-    CGImageRelease(words);
-    if (!ok) {
-        [writer cancelWriting];
-        return NO;
-    }
-    [input markAsFinished];
-    // The last frame, or a still's only one, is held to the end of the loop.
-    [writer endSessionAtSourceTime:length];
-    dispatch_semaphore_t written = dispatch_semaphore_create(0);
-    [writer finishWritingWithCompletionHandler:^{ dispatch_semaphore_signal(written); }];
-    dispatch_semaphore_wait(written, DISPATCH_TIME_FOREVER);
-    if (writer.status != AVAssetWriterStatusCompleted) return NO;
-    [NSFileManager.defaultManager removeItemAtURL:file error:nil];
-    return [NSFileManager.defaultManager moveItemAtURL:partial toURL:file error:nil];
+    SGLyricsClipKaraokeSpec spec = {
+        .previous = nil, .line = line, .next = next,
+        .words = NULL, .wordCount = 0,
+        .elapsedInLine = 0, .sungDuration = 0, .clipDuration = kLoopSeconds,
+        .songTime = 0, .scrollIn = (style == SGLyricsClipAnimated),
+    };
+    return SGLyricsClipWriteKaraoke(file, backdrop, NULL, size, style, SGLyricsClipWords, spec);
 }
 
 typedef struct {

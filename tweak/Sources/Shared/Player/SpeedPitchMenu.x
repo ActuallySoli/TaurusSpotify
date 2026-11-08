@@ -73,10 +73,10 @@ NSNotificationName const SGSpeedPitchChangedNotification = @"SGSpeedPitchChanged
     UIImageView *_icon, *_chevron;
     UILabel *_title, *_summary;
     UIView *_panel;
-    UILabel *_speedName, *_pitchName, *_followName, *_keepSongName, *_reverbName;
+    UILabel *_speedName, *_pitchName, *_followName, *_keepSongName, *_fadePauseName, *_reverbName;
     UIButton *_speedValue, *_pitchValue, *_reverbValue;
     UISlider *_speed, *_pitch, *_reverb;
-    UISwitch *_follow, *_keepSong;
+    UISwitch *_follow, *_keepSong, *_fadePause;
     float _shownSpeed, _shownPitch, _shownReverb;
     NSTimeInterval _speedSentAt;
     BOOL _speedPending;
@@ -216,16 +216,25 @@ static void placeTick(UISlider *slider) {
     _keepSong.onTintColor = SGGreen();
     _keepSong.accessibilityLabel = @"Keep for This Song";
     [_keepSong addTarget:self action:@selector(keepSongChanged) forControlEvents:UIControlEventValueChanged];
-    for (UIView *view in @[_speedName, _speedValue, _speed, _followName, _follow, _keepSongName, _keepSong, _pitchName, _pitchValue, _pitch,
-                           _reverbName, _reverbValue, _reverb]) [_panel addSubview:view];
+    _fadePauseName = makeLabel(nameFont, secondary());
+    _fadePauseName.text = @"Fade on pause";
+    _fadePauseName.adjustsFontSizeToFitWidth = YES;
+    _fadePauseName.minimumScaleFactor = 0.8;
+    _fadePauseName.isAccessibilityElement = NO;
+    _fadePause = [UISwitch new];
+    _fadePause.onTintColor = SGGreen();
+    _fadePause.accessibilityLabel = @"Fade on pause";
+    [_fadePause addTarget:self action:@selector(fadePauseChanged) forControlEvents:UIControlEventValueChanged];
+    for (UIView *view in @[_speedName, _speedValue, _speed, _followName, _follow, _keepSongName, _keepSong, _fadePauseName, _fadePause,
+                           _pitchName, _pitchValue, _pitch, _reverbName, _reverbValue, _reverb]) [_panel addSubview:view];
 
     [self refresh];
     return self;
 }
 
-// The sliders' part: speed, the switch, and pitch unless it follows speed.
+// The sliders' part: speed, the switches, and pitch unless it follows speed.
 static CGFloat panelHeight(void) {
-    return kSliderBlockHeight * 2 + kFollowHeight * 2 + (SGPlayerPitchFollowsSpeed() ? 0 : kSliderBlockHeight) + kPanelBottom;
+    return kSliderBlockHeight * 2 + kFollowHeight * 3 + (SGPlayerPitchFollowsSpeed() ? 0 : kSliderBlockHeight) + kPanelBottom;
 }
 
 + (CGFloat)heightOpen:(BOOL)open {
@@ -246,10 +255,10 @@ static CGFloat panelHeight(void) {
 
     _row.hidden = self.panelOnly;
     // Pitch stays laid out under the switch when it folds away, so it fades where it was rather than moving.
-    _panel.frame = CGRectMake(0, self.panelOnly ? 0 : kRowHeight, width, kSliderBlockHeight * 3 + kFollowHeight * 2 + kPanelBottom);
+    _panel.frame = CGRectMake(0, self.panelOnly ? 0 : kRowHeight, width, kSliderBlockHeight * 3 + kFollowHeight * 3 + kPanelBottom);
     CGFloat y = 0;
-    for (NSArray<UIView *> *line in @[@[_speedName, _speedValue, _speed], @[_followName, _follow], @[_keepSongName, _keepSong], @[_reverbName, _reverbValue, _reverb],
-                                      @[_pitchName, _pitchValue, _pitch]]) {
+    for (NSArray<UIView *> *line in @[@[_speedName, _speedValue, _speed], @[_followName, _follow], @[_keepSongName, _keepSong],
+                                      @[_fadePauseName, _fadePause], @[_reverbName, _reverbValue, _reverb], @[_pitchName, _pitchValue, _pitch]]) {
         if (line.count == 2) {
             CGSize toggle = [_follow sizeThatFits:CGSizeZero];
             line[1].frame = CGRectMake(width - side - toggle.width, y + roundf((kFollowHeight - toggle.height) / 2), toggle.width, toggle.height);
@@ -321,6 +330,7 @@ static NSString *summaryText(float speed, BOOL speedShown, float pitch, BOOL fol
     _follow.enabled = speedAllowed;
     _followName.alpha = speedAllowed ? 1 : 0.4;
     _keepSong.on = SGPlayerKeepForCurrentSong();
+    _fadePause.on = SGPlayerFadeOnPause();
     [self showValues];
 }
 
@@ -413,6 +423,10 @@ static NSString *summaryText(float speed, BOOL speedShown, float pitch, BOOL fol
 
 - (void)keepSongChanged {
     SGSetPlayerKeepForCurrentSong(_keepSong.on);
+}
+
+- (void)fadePauseChanged {
+    SGSetPlayerFadeOnPause(_fadePause.on);
 }
 
 - (void)sendSpeed {

@@ -29,12 +29,12 @@ NSArray *SGLockScreenMotionRows(void) {
             SGLockScreenStarEnsureView();
             SGLockScreenLyricsExclusivityChanged(SGEnabled(SGKeyLockScreenExclusiveLyrics));
         };
-        SGModRow *style = SGChoiceRow(@"Lyrics style", @"Still draws each line once; Animated breathes the cover behind it",
-                                      SGKeyLockScreenLyricsStyle, @[@"Still", @"Animated"], 0);
+        SGModRow *style = SGChoiceRow(@"Lyrics style", @"Still draws each line once; Animated sweeps the words and breathes the cover",
+                                      SGKeyLockScreenLyricsStyle, @[@"Still", @"Animated"], SGLyricsClipAnimated);
         style.visible = ^BOOL { return SGLockScreenLyricsViewEnabled() && starViewOrderContains(kStarLyrics); };
-        SGModRow *look = SGChoiceRow(@"Lyrics look", @"Where the words sit: Full screen covers the artwork; "
+        SGModRow *look = SGChoiceRow(@"Lyrics look", @"Where the words sit: Full screen renders Beautiful Lyrics with word sweep; "
                                      @"Choose how the artwork and words are composed",
-                                     SGKeyLockScreenLyricsLook, SGLyricsClipCompositionNames(), SGLyricsClipPoster);
+                                     SGKeyLockScreenLyricsLook, SGLyricsClipCompositionNames(), SGLyricsClipWords);
         look.visible = style.visible;
         SGModRow *exclusiveLyrics = SGSwitchRow(@"Automatically switch lyric styles",
             @"Turn off artist-name lyrics while lock-screen Lyrics is selected, and restore them when it is not",

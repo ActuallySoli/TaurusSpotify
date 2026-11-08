@@ -78,24 +78,89 @@ static BOOL isExplicitView(UIView *view) {
     return [NSStringFromClass(view.class) hasSuffix:@"ExplicitBadge"];
 }
 
+static UIImage *explicitBadgeImage(BOOL nineteenPlus) {
+    static UIImage *eBadge;
+    static UIImage *nineteenBadge;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        CGSize size = CGSizeMake(13, 13);
+        UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
+        fmt.opaque = NO;
+        fmt.scale = 3.0;
+        UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:fmt];
+        eBadge = [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+            CGRect rect = CGRectMake(0.5, 0.5, 12.0, 12.0);
+            UIBezierPath *pill = [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:2.8];
+            [[UIColor colorWithWhite:1.0 alpha:0.78] setFill];
+            [pill fill];
+            NSDictionary *attrs = @{
+                NSFontAttributeName: [UIFont systemFontOfSize:9.2 weight:UIFontWeightHeavy],
+                NSForegroundColorAttributeName: [UIColor colorWithWhite:0.05 alpha:0.98],
+            };
+            NSString *letter = @"E";
+            CGSize textSize = [letter sizeWithAttributes:attrs];
+            CGRect textRect = CGRectMake((size.width - textSize.width) / 2.0,
+                                         (size.height - textSize.height) / 2.0,
+                                         textSize.width, textSize.height);
+            [letter drawInRect:textRect withAttributes:attrs];
+        }];
+        nineteenBadge = [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+            CGRect rect = CGRectMake(0.5, 0.5, 12.0, 12.0);
+            UIBezierPath *pill = [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:2.8];
+            [[UIColor colorWithWhite:1.0 alpha:0.78] setFill];
+            [pill fill];
+            NSDictionary *attrs = @{
+                NSFontAttributeName: [UIFont systemFontOfSize:7.2 weight:UIFontWeightHeavy],
+                NSForegroundColorAttributeName: [UIColor colorWithWhite:0.05 alpha:0.98],
+            };
+            NSString *letter = @"19";
+            CGSize textSize = [letter sizeWithAttributes:attrs];
+            CGRect textRect = CGRectMake((size.width - textSize.width) / 2.0,
+                                         (size.height - textSize.height) / 2.0,
+                                         textSize.width, textSize.height);
+            [letter drawInRect:textRect withAttributes:attrs];
+        }];
+    });
+    return nineteenPlus ? nineteenBadge : eBadge;
+}
+
 static void styleExplicitView(UIView *view) {
     if (SGHidden(SGKeyHideExplicit)) {
         SGRSuppress(view);
         return;
     }
-    if (!SGEnabled(SGRKeyPrettierIcons)) return;
     static char kPrettyKey;
     UIImageView *badge = objc_getAssociatedObject(view, &kPrettyKey);
+    if (!SGEnabled(SGRKeyPrettierIcons)) {
+        if (badge) badge.alpha = 0;
+        SGForEachView(view, ^(UIView *sub) {
+            if (sub == view || sub == badge) return;
+            sub.alpha = 1;
+            if ([sub isKindOfClass:UILabel.class]) {
+                UILabel *label = (UILabel *)sub;
+                label.textColor = [UIColor colorWithWhite:0.06 alpha:0.96];
+            }
+        });
+        return;
+    }
+    BOOL nineteen = [view.accessibilityIdentifier isEqualToString:@"Components.UI.19andOverIcon"];
     if (!badge) {
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:11 weight:UIImageSymbolWeightSemibold];
-        badge = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"e.square.fill" withConfiguration:cfg]];
-        badge.tintColor = SGRTertiary();
+        badge = [[UIImageView alloc] initWithImage:explicitBadgeImage(nineteen)];
         badge.contentMode = UIViewContentModeCenter;
         badge.userInteractionEnabled = NO;
         objc_setAssociatedObject(view, &kPrettyKey, badge, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        for (UIView *sub in view.subviews) sub.alpha = 0;
-        [view addSubview:badge];
+    } else {
+        badge.image = explicitBadgeImage(nineteen);
     }
+    if (view.backgroundColor && ![view.backgroundColor isEqual:UIColor.clearColor]) {
+        view.backgroundColor = UIColor.clearColor;
+    }
+    for (UIView *sub in view.subviews) {
+        if (sub != badge) sub.alpha = 0;
+    }
+    if (badge.superview != view) [view addSubview:badge];
+    else if (view.subviews.lastObject != badge) [view bringSubviewToFront:badge];
+    badge.alpha = 1;
     badge.frame = view.bounds;
 }
 
@@ -108,6 +173,5 @@ static void styleExplicitView(UIView *view) {
 
 %ctor {
     if (!SGRedesignedUI()) return;
-    if (!SGRPlainCheckOn() && !SGHidden(SGKeyHideExplicit) && !SGEnabled(SGRKeyPrettierIcons)) return;
     %init;
 }

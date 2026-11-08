@@ -50,3 +50,30 @@ CGImageRef SGLyricsClipFrameInAtTime(CGImageRef backdrop, CGImageRef cover, NSSt
                                     SGLyricsClipStyle style, SGLyricsClipComposition composition, double from) CF_RETURNS_RETAINED;
 BOOL SGLyricsClipWriteInAtTime(NSURL *file, CGImageRef backdrop, CGImageRef cover, NSString *line, NSString *next, CGSize size,
                               SGLyricsClipStyle style, SGLyricsClipComposition composition, double from);
+
+typedef struct {
+    NSUInteger location;
+    NSUInteger length;
+    double start;   // seconds from the start of the line
+    double end;     // seconds from the start of the line
+} SGLyricsClipWord;
+
+typedef struct {
+    __unsafe_unretained NSString *previous;
+    __unsafe_unretained NSString *line;
+    __unsafe_unretained NSString *next;
+    const SGLyricsClipWord *words;
+    NSUInteger wordCount;
+    double elapsedInLine;   // seconds already sung in `line` at frame 0 (pause freeze-frame / mid-line resume)
+    double sungDuration;    // seconds `line` takes to be sung (0 uses default estimate)
+    double clipDuration;    // seconds the video clip runs (0 uses kLoopSeconds)
+    double songTime;        // track position in seconds at frame 0, for continuous phase
+    BOOL scrollIn;          // eases the line stack up over the first 0.28 s when animated
+} SGLyricsClipKaraokeSpec;
+
+CGImageRef SGLyricsClipKaraokeFrame(CGImageRef backdrop, CGImageRef cover, CGSize size,
+                                    SGLyricsClipStyle style, SGLyricsClipComposition composition,
+                                    SGLyricsClipKaraokeSpec spec) CF_RETURNS_RETAINED;
+BOOL SGLyricsClipWriteKaraoke(NSURL *file, CGImageRef backdrop, CGImageRef cover, CGSize size,
+                              SGLyricsClipStyle style, SGLyricsClipComposition composition,
+                              SGLyricsClipKaraokeSpec spec);
