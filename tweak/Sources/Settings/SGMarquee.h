@@ -9,5 +9,4 @@
 @property (nonatomic, copy) NSString *text;
 @property (nonatomic, strong) UIFont *font;
 @property (nonatomic, strong) UIColor *textColor;
-@property (nonatomic) NSTextAlignment textAlignment;
 @end

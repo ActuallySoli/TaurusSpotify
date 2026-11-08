@@ -21,7 +21,6 @@
 + (void)enableOffline:(void (^)(NSDictionary *, NSString *))completion;
 + (void)restoreKeyMode:(void (^)(BOOL, NSString *))completion;
 + (void)loadDetails:(BOOL)journal completion:(void (^)(NSDictionary *))completion;
-+ (void)syncOfflineTracks;
 @end
 
 // nil when this build has no companion.

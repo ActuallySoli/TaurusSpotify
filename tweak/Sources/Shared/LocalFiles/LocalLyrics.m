@@ -69,14 +69,9 @@ static void storeLinks(NSDictionary<NSString *, NSString *> *links) {
 // A lyrics key carries "#<number>" after the URI once the file's names are edited (LocalFiles.h); the
 // link is to the file, so it holds through a rename.
 static NSString *bareURI(NSString *uri) {
-    if (!uri.length) return nil;
-    if (SGLocalFileIs(uri)) {
-        NSRange mark = [uri rangeOfString:@"#" options:NSBackwardsSearch];
-        return mark.location == NSNotFound ? uri : [uri substringToIndex:mark.location];
-    }
-    NSString *clean = [uri stringByRemovingPercentEncoding] ?: uri;
-    if ([clean hasPrefix:@"spotify:track:"]) clean = [clean substringFromIndex:14];
-    return clean.length ? clean : nil;
+    if (!SGLocalFileIs(uri)) return nil;
+    NSRange mark = [uri rangeOfString:@"#" options:NSBackwardsSearch];
+    return mark.location == NSNotFound ? uri : [uri substringToIndex:mark.location];
 }
 
 NSString *SGImportedLRCLinkedTo(NSString *uri) {
@@ -271,7 +266,6 @@ static SGLyricsResult *resultOf(SGLRCSheet *sheet, NSString *title, NSString *ar
     SGLyricsResult *result = [SGLyricsResult new];
     result.provider = kCredit;
     result.synced = sheet.synced;
-    result.wordTimed = SGKaraokeLinesTiming(sheet.lines) == SGKaraokeTimingWords;
     result.karaokeLines = sheet.lines;
     result.starts = sheet.starts;
     result.texts = sheet.texts;
