@@ -160,6 +160,34 @@ static BOOL signature(Class cls, SEL sel, unsigned args, char returnType, Method
     char type[32]; method_getReturnType(*out, type, sizeof(type));
     return type[0] == returnType;
 }
+static void notifyOfflineTracksFromData(NSData *data) {
+    if (![data isKindOfClass:NSData.class] || data.length < 20) return;
+    const char *bytes = (const char *)data.bytes;
+    NSUInteger length = data.length;
+    const char *prefix = "spotify:track:";
+    size_t prefixLen = strlen(prefix);
+    NSMutableSet *batch = [NSMutableSet set];
+    for (NSUInteger i = 0; i + prefixLen <= length; i++) {
+        if (memcmp(bytes + i, prefix, prefixLen) == 0) {
+            NSUInteger start = i;
+            NSUInteger end = start + prefixLen;
+            while (end < length && (isalnum(bytes[end]) || bytes[end] == '_')) end++;
+            if (end - start >= 30 && end - start <= 40) {
+                NSString *uri = [[NSString alloc] initWithBytes:bytes + start length:end - start encoding:NSUTF8StringEncoding];
+                if (uri.length) [batch addObject:uri];
+            }
+            i = end;
+        }
+    }
+    if (batch.count) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            for (NSString *uri in batch) {
+                [NSNotificationCenter.defaultCenter postNotificationName:@"SGDownloadTrackRequestedNotification" object:uri];
+            }
+        });
+    }
+}
+
 static void putHook(Class cls, SEL sel, Method method, id block, NSMutableArray *names) {
     IMP previous=method_getImplementation(method);
     IMP replacement = imp_implementationWithBlock(block);
@@ -615,11 +643,11 @@ void SAPInstallTrackDownloader(void) {
 #ifdef SAP_RUNTIME_TESTING
                     rememberNativeCall(self, serviceName, methodName);
 #endif
+                    BOOL offline=[serviceName isKindOfClass:NSString.class] && [serviceName isEqual:service];
                     if(!SAPDiagnosticsEnabled())return ((id (*)(id,SEL,id,id,id,id))original)(self,command,serviceName,methodName,payload,callback);
                     SAPTraceHookCalled(object_getClass(self),command);
                     SAPTraceRPC *trace=traceHookDepth==0?SAPTraceRPCBegin(serviceName,methodName,payload,
                         SAPJournalOnOwnQueue()?@"pixie_diagnostic_query":dispatch_get_specific(downloadWorkerKey)?@"pixie_service":@"spotify",self,[commandName hasPrefix:@"callStream:"]):nil;
-                    BOOL offline=[serviceName isKindOfClass:NSString.class] && [serviceName isEqual:service];
                     BOOL playerCall=[serviceName isKindOfClass:NSString.class] && [serviceName isEqual:@"spotify.player.esperanto.proto.ContextPlayer"];
                     if(SAPDiagnosticsEnabled() && playerCall && playerHookDepth==0)SAPTraceWithOperation(trace?trace.identifier:SAPTraceCurrentOperation(),^{SAPObservePlayerRequest(serviceName,methodName,payload);});
                     BOOL outer=offlineHookDepth==0, own=SAPJournalOnOwnQueue();
@@ -724,6 +752,11 @@ void SAPDownloadCurrentTrack(void (^message)(NSString *)) {
         if (message) message(SAPL(@"Транспорт ядра Spotify ещё не получен. Начни воспроизведение и повтори.",@"The Spotify core transport is not available yet. Start playback and try again.")); return;
     }
     SAPJournalNoteAction(@"single_track_requested",@{@"track_uri":urlString,@"transport_available":@YES});
+    if (identifier.length) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [NSNotificationCenter.defaultCenter postNotificationName:@"SGDownloadTrackRequestedNotification" object:identifier];
+        });
+    }
     dispatch_async(worker, ^{
         if (atomic_load(&active)) return;
         jobTraceOperation=trace;
@@ -933,6 +966,45 @@ NSDictionary *SAPTrackDownloadReportWithJournal(NSDictionary *journalReport) {
 NSString *SAPTrackDownloadSummary(void) {
     os_unfair_lock_lock(&reportLock);NSDictionary *report=reportSnapshot;os_unfair_lock_unlock(&reportLock);
     return [NSString stringWithFormat:@"%@%@%@", report[@"track_title"] ?: @"", [report[@"track_title"] length] ? @"\n" : @"", report[@"detail"] ?: SAPL(@"Загрузка не запускалась",@"No download started")];
+}
+
+void SAPRemoveDownloadForURI(NSString *uriString) {
+    if (![uriString isKindOfClass:NSString.class] || !uriString.length) return;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSData *payload = SAPProtoBytes(2, [uriString dataUsingEncoding:NSUTF8StringEncoding]);
+        SEL sel = NSSelectorFromString(@"callSingle:method:payload:onResponse:");
+        for (id candidate in transportCandidates()) {
+            Method method;
+            if (signature(object_getClass(candidate), sel, 6, '@', &method)) {
+                @try {
+                    ((id (*)(id, SEL, id, id, id, id))objc_msgSend)(candidate, sel, service, @"RemoveDownload", payload, ^(NSData *resp){});
+                } @catch (NSException *e) {}
+                break;
+            }
+        }
+    });
+}
+
+void SAPQueryOfflineItems(void) {
+    NSArray *candidates = transportCandidates();
+    if (!candidates.count) return;
+    for (id endpoint in candidates) {
+        SEL command = NSSelectorFromString(@"callSingle:method:payload:onResponse:");
+        Method method;
+        if (!signature(object_getClass(endpoint), command, 6, '@', &method)) continue;
+        @try {
+            ((id (*)(id, SEL, id, id, id, id))objc_msgSend)(endpoint, command, service, @"GetItems", [NSData data], ^(NSData *response) {
+                notifyOfflineTracksFromData(response);
+            });
+        } @catch (NSException *e) {}
+        @try {
+            NSMutableData *query = [SAPProtoBytes(1, SAPProtoInteger(1, 1)) mutableCopy];
+            ((id (*)(id, SEL, id, id, id, id))objc_msgSend)(endpoint, command, service, @"GetContexts", query, ^(NSData *response) {
+                notifyOfflineTracksFromData(response);
+            });
+        } @catch (NSException *e) {}
+        break;
+    }
 }
 #ifdef SAP_RUNTIME_TESTING
 id SAP14PlayerForTesting(void) { return player; }

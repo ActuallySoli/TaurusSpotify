@@ -129,9 +129,22 @@ void SGFillCell(UITableViewCell *cell, NSString *title, NSString *subtitle, UICo
 
 UIView *SGSectionHeader(UITableView *table, NSString *title) {
     UILabel *label = [UILabel new];
-    label.text = title.uppercaseString;
-    label.font = SGSubtitleFont();
-    label.textColor = SGGrey();
+    if ([title containsString:@"[EXPERIMENTAL]"]) {
+        NSString *upper = title.uppercaseString;
+        NSMutableAttributedString *attr = [[NSMutableAttributedString alloc] initWithString:upper attributes:@{
+            NSFontAttributeName: SGSubtitleFont(),
+            NSForegroundColorAttributeName: SGGrey()
+        }];
+        NSRange expRange = [upper rangeOfString:@"[EXPERIMENTAL]"];
+        if (expRange.location != NSNotFound) {
+            [attr addAttribute:NSForegroundColorAttributeName value:UIColor.systemRedColor range:expRange];
+        }
+        label.attributedText = attr;
+    } else {
+        label.text = title.uppercaseString;
+        label.font = SGSubtitleFont();
+        label.textColor = SGGrey();
+    }
     label.frame = CGRectMake(16, 20, table.bounds.size.width - 32, 14);
     label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, table.bounds.size.width, SGSectionHeaderHeight)];

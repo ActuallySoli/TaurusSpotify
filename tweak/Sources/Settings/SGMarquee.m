@@ -52,6 +52,12 @@ static NSString *const kScroll = @"sg.marquee";
     _label.textColor = textColor;
 }
 
+- (NSTextAlignment)textAlignment { return _label.textAlignment; }
+- (void)setTextAlignment:(NSTextAlignment)textAlignment {
+    _label.textAlignment = textAlignment;
+    [self setNeedsLayout];
+}
+
 - (void)didMoveToWindow {
     [super didMoveToWindow];
     // A view out of its window loses its animations; back in one, it scrolls again.

@@ -378,10 +378,15 @@ void SGSpicyLyricsAskWith(NSString *key, SGLyricsQuery *query, void (^done)(SGLy
         return;
     }
     if (now < sg_waitUntil) {
-        // Lost rather than "no lyrics", so the walk is not kept and asks again once the wait is over.
         SGLog(@"spicy lyrics: %@ skipped, rate limited for %.0fs more", trackID, sg_waitUntil - now);
         SGLyricsNoteReply(nil, [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCannotConnectToHost userInfo:nil]);
-        done(nil);
+        NSTimeInterval wait = sg_waitUntil - now;
+        if (wait <= 0) wait = 15.0;
+        SGLyricsNoteRateLimit(wait);
+        SGLyricsResult *rateLimitResult = [SGLyricsResult new];
+        rateLimitResult.rateLimited = YES;
+        rateLimitResult.retryAfter = wait;
+        done(rateLimitResult);
         return;
     }
     NSURL *url = [NSURL URLWithString:[kAPI stringByAppendingString:trackID]];
@@ -392,6 +397,15 @@ void SGSpicyLyricsAskWith(NSString *key, SGLyricsQuery *query, void (^done)(SGLy
         if (wait > 0) {
             sg_waitUntil = uptime() + wait;
             SGLog(@"spicy lyrics: rate limited (%ld), leaving it alone for %.0fs", (long)status, wait);
+        }
+        if (status == 429) {
+            NSTimeInterval delay = wait > 0 ? wait : 15.0;
+            SGLyricsNoteRateLimit(delay);
+            SGLyricsResult *rateLimitResult = [SGLyricsResult new];
+            rateLimitResult.rateLimited = YES;
+            rateLimitResult.retryAfter = delay;
+            done(rateLimitResult);
+            return;
         }
         if (status == 401 || status == 403) {
             sg_refused = errorCodeIn(root) ?: @"";

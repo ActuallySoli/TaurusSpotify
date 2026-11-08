@@ -328,6 +328,29 @@ void SAPInstallNativeOffline(void) {
                 SAPJournalNoteAction(@"native_entity_add_called",@{@"entity_uri":urlText(url)?:@"",
                     @"track_count":@([trackURLs isKindOfClass:NSArray.class]?[(NSArray *)trackURLs count]:0),
                     @"result_observed":@NO});
+                if ([trackURLs isKindOfClass:NSArray.class]) {
+                    for (id item in (NSArray *)trackURLs) {
+                        NSString *uri = [item respondsToSelector:@selector(absoluteString)] ? [item absoluteString] : [item description];
+                        if ([uri containsString:@"spotify:track:"]) {
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                [NSNotificationCenter.defaultCenter postNotificationName:@"SGDownloadTrackRequestedNotification" object:uri];
+                            });
+                        }
+                    }
+                }
+                NSString *entityUri = urlText(url);
+                if ([entityUri containsString:@"spotify:track:"]) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [NSNotificationCenter.defaultCenter postNotificationName:@"SGDownloadTrackRequestedNotification" object:entityUri];
+                    });
+                } else {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        SAPQueryOfflineItems();
+                    });
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        SAPQueryOfflineItems();
+                    });
+                }
                 SAPTraceWithOperation(trace,^{originalMakeEntity(receiver,entitySelector,url,trackURLs);});
                 SAP_TRACE("native_entity","handler_returned",trace,@{@"download_completion_confirmed":@NO});
             });
@@ -343,6 +366,19 @@ void SAPInstallNativeOffline(void) {
                 if(SAPDiagnosticsEnabled())SAPJournalNoteEntityRequest(urlText(url),nil);
                 SAPJournalNoteAction(@"native_entity_add_called",@{@"entity_uri":urlText(url)?:@"",
                     @"track_count":NSNull.null,@"result_observed":@NO});
+                NSString *entityUri2 = urlText(url);
+                if ([entityUri2 containsString:@"spotify:track:"]) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [NSNotificationCenter.defaultCenter postNotificationName:@"SGDownloadTrackRequestedNotification" object:entityUri2];
+                    });
+                } else {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        SAPQueryOfflineItems();
+                    });
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        SAPQueryOfflineItems();
+                    });
+                }
                 SAPTraceWithOperation(trace,^{originalMakeEntityOnly(receiver,entityOnly,url);});
                 SAP_TRACE("native_entity","handler_returned",trace,@{@"download_completion_confirmed":@NO});
             });
@@ -358,6 +394,12 @@ void SAPInstallNativeOffline(void) {
                 if(SAPDiagnosticsEnabled())SAPJournalNoteEntityReset(urlText(url));
                 SAPJournalNoteAction(@"native_entity_remove_called",@{@"entity_uri":urlText(url)?:@"",
                     @"result_observed":@NO});
+                NSString *entityUri = urlText(url);
+                if (entityUri.length) {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        SAPRemoveDownloadForURI(entityUri);
+                    });
+                }
                 SAPTraceWithOperation(trace,^{originalResetEntity(receiver,resetSelector,url);});
                 SAP_TRACE("native_entity","handler_returned",trace,@{@"removal_completion_confirmed":@NO});
             });
